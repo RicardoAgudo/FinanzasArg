@@ -79,7 +79,16 @@ export default function App() {
   // --- Estados de Autenticación y Carga ---
   const [user, setUser] = useState(null);
   const [dbLoading, setDbLoading] = useState(true);
-  const [syncCode, setSyncCode] = useState('');
+  
+  // CORRECCIÓN: Inicialización robusta para evitar estados vacíos que oculten consumos nuevos
+  const getInitialSyncCode = () => {
+    try {
+      return localStorage.getItem('finanzarg_local_synccode') || 'ARG-LOCAL';
+    } catch (e) {
+      return 'ARG-LOCAL';
+    }
+  };
+  const [syncCode, setSyncCode] = useState(getInitialSyncCode());
   const [inputSyncCode, setInputSyncCode] = useState('');
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [toast, setToast] = useState(null);
@@ -271,6 +280,7 @@ export default function App() {
       return;
     }
 
+    const activeCode = syncCode || 'ARG-LOCAL';
     const newTransaction = {
       description: description.trim(),
       amount: parseFloat(amount),
@@ -278,7 +288,7 @@ export default function App() {
       paymentMethod,
       installments: paymentMethod === 'credito' ? parseInt(installments) : 1,
       category,
-      syncCode,
+      syncCode: activeCode,
       createdAt: Date.now(),
       author: user ? user.uid : 'local-user'
     };
@@ -369,7 +379,8 @@ export default function App() {
 
   // ================= FILTRADO Y ORDEN DE DATOS (EN MEMORIA) =================
   const filteredAndSortedTransactions = useMemo(() => {
-    let result = transactions.filter(t => t.syncCode === syncCode);
+    const activeCode = syncCode || 'ARG-LOCAL';
+    let result = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
 
     if (filterMethod !== 'all') {
       result = result.filter(t => t.paymentMethod === filterMethod);
@@ -394,10 +405,13 @@ export default function App() {
   const financials = useMemo(() => {
     let cashDebitArs = 0;
     let cashDebitUsd = 0;
-    let creditArs = 0;
-    let creditUsd = 0;
+    let creditArs = 0; // Próximo vencimiento de cuotas en ARS
+    let creditUsd = 0; // Próximo vencimiento de cuotas en USD
+    let creditTotalAbsoluteArs = 0; // Deuda total absoluta (consumo sin dividir) ARS
+    let creditTotalAbsoluteUsd = 0; // Deuda total absoluta (consumo sin dividir) USD
 
-    const myGroup = transactions.filter(t => t.syncCode === syncCode);
+    const activeCode = syncCode || 'ARG-LOCAL';
+    const myGroup = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
 
     myGroup.forEach(t => {
       const value = t.amount;
@@ -405,8 +419,10 @@ export default function App() {
         const monthlyInstallment = value / (t.installments || 1);
         if (t.currency === 'ARS') {
           creditArs += monthlyInstallment;
+          creditTotalAbsoluteArs += value;
         } else {
           creditUsd += monthlyInstallment;
+          creditTotalAbsoluteUsd += value;
         }
       } else {
         if (t.currency === 'ARS') {
@@ -419,6 +435,7 @@ export default function App() {
 
     const consolidatedArs = cashDebitArs + (cashDebitUsd * dolarBlue);
     const consolidatedCreditArs = creditArs + (creditUsd * dolarBlue);
+    const consolidatedCreditTotalAbsoluteArs = creditTotalAbsoluteArs + (creditTotalAbsoluteUsd * dolarBlue);
 
     return {
       cashDebitArs,
@@ -426,14 +443,18 @@ export default function App() {
       creditArs,
       creditUsd,
       consolidatedArs,
-      consolidatedCreditArs
+      consolidatedCreditArs,
+      creditTotalAbsoluteArs,
+      creditTotalAbsoluteUsd,
+      consolidatedCreditTotalAbsoluteArs
     };
   }, [transactions, syncCode, dolarBlue]);
 
   // ================= CATEGORÍAS GRÁFICOS (EN MEMORIA) =================
   const categoryStats = useMemo(() => {
     const counts = {};
-    const myGroup = transactions.filter(t => t.syncCode === syncCode);
+    const activeCode = syncCode || 'ARG-LOCAL';
+    const myGroup = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
 
     myGroup.forEach(t => {
       const amountInPesos = t.currency === 'ARS' ? t.amount : t.amount * dolarBlue;
@@ -451,12 +472,13 @@ export default function App() {
 
   // Carga de ejemplo si el grupo está vacío (Híbrido)
   const handleLoadMockData = async () => {
+    const activeCode = syncCode || 'ARG-LOCAL';
     const mocks = [
-      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 * 2, author: user ? user.uid : 'local-user' },
-      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000, author: user ? user.uid : 'local-user' },
-      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode, createdAt: Date.now(), author: user ? user.uid : 'local-user' },
-      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode, createdAt: Date.now() - 50000, author: user ? user.uid : 'local-user' },
-      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode, createdAt: Date.now() - 120000, author: user ? user.uid : 'local-user' }
+      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode: activeCode, createdAt: Date.now() - 86400000 * 2, author: user ? user.uid : 'local-user' },
+      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode: activeCode, createdAt: Date.now() - 86400000, author: user ? user.uid : 'local-user' },
+      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode: activeCode, createdAt: Date.now(), author: user ? user.uid : 'local-user' },
+      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode: activeCode, createdAt: Date.now() - 50000, author: user ? user.uid : 'local-user' },
+      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode: activeCode, createdAt: Date.now() - 120000, author: user ? user.uid : 'local-user' }
     ];
 
     if (!isFirebaseActive) {
@@ -592,64 +614,137 @@ export default function App() {
           </div>
         </section>
 
-        {/* CONTENEDOR DE INDICADORES DE CAPITAL */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          
-          {/* Tarjeta Efectivo/Débito en Pesos */}
-          <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
-            <div className="flex justify-between items-start">
-              <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
-                <Wallet className="w-5 h-5" />
-              </div>
-              <span className="text-[10px] bg-emerald-500/10 text-emerald-400 font-bold px-2 py-0.5 rounded-full border border-emerald-500/10">ARS Liquidez</span>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-slate-400">Total en Pesos ARS</span>
-              <h3 className="text-2xl font-black tracking-tight text-white">
-                ${financials.cashDebitArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
-              </h3>
-            </div>
-            <p className="text-[10px] text-slate-500 mt-1">Suma de Efectivo y cuentas de Débito</p>
+        {/* INDICADORES DE CAPITAL - LÍQUIDO DISPONIBLE (EFECTIVO Y DÉBITO) */}
+        <div className="space-y-3">
+          <div className="flex items-center space-x-2 px-1">
+            <Wallet className="w-4 h-4 text-emerald-400" />
+            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Líquido Disponible (Efectivo & Débito)</h4>
           </div>
-
-          {/* Tarjeta Efectivo/Débito en Dólares */}
-          <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
-            <div className="flex justify-between items-start">
-              <div className="p-2 bg-indigo-500/10 rounded-xl text-indigo-400">
-                <DollarSign className="w-5 h-5" />
+          <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            
+            {/* Tarjeta Efectivo/Débito en Pesos */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
+                  <Wallet className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-emerald-500/10 text-emerald-400 font-bold px-2 py-0.5 rounded-full border border-emerald-500/10">ARS Liquidez</span>
               </div>
-              <span className="text-[10px] bg-indigo-500/10 text-indigo-400 font-bold px-2 py-0.5 rounded-full border border-indigo-500/10">USD Líquido</span>
-            </div>
-            <div className="space-y-1">
-              <span className="text-xs text-slate-400">Total en Dólares USD</span>
-              <h3 className="text-2xl font-black tracking-tight text-white">
-                u$s {financials.cashDebitUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
-              </h3>
-            </div>
-            <p className="text-[10px] text-slate-400 font-medium">
-              ≈ ${(financials.cashDebitUsd * dolarBlue).toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS
-            </p>
-          </div>
-
-          {/* Balance Total Consolidado en Pesos */}
-          <div className="bg-gradient-to-br from-indigo-950/40 via-indigo-900/10 to-slate-950 border border-indigo-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
-            <div className="flex justify-between items-start">
-              <div className="p-2 bg-indigo-500/20 rounded-xl text-indigo-300">
-                <TrendingUp className="w-5 h-5" />
+              <div className="space-y-1">
+                <span className="text-xs text-slate-400">Total en Pesos ARS</span>
+                <h3 className="text-2xl font-black tracking-tight text-white">
+                  ${financials.cashDebitArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
               </div>
-              <span className="text-[10px] bg-indigo-500/20 text-indigo-300 font-bold px-2 py-0.5 rounded-full border border-indigo-500/30">Líquido Neto</span>
+              <p className="text-[10px] text-slate-500 mt-1">Suma de Efectivo y cuentas de Débito</p>
             </div>
-            <div className="space-y-1">
-              <span className="text-xs text-indigo-300 font-medium">Consolidado Total ARS</span>
-              <h3 className="text-2xl font-black tracking-tight text-indigo-100">
-                ${financials.consolidatedArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
-              </h3>
-            </div>
-            <p className="text-[10px] text-indigo-400">Conversión de dólares calculada al Blue</p>
-          </div>
 
-        </section>
+            {/* Tarjeta Efectivo/Débito en Dólares */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-indigo-500/10 rounded-xl text-indigo-400">
+                  <DollarSign className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-indigo-500/10 text-indigo-400 font-bold px-2 py-0.5 rounded-full border border-indigo-500/10">USD Líquido</span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-slate-400">Total en Dólares USD</span>
+                <h3 className="text-2xl font-black tracking-tight text-white">
+                  u$s {financials.cashDebitUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
+              </div>
+              <p className="text-[10px] text-slate-400 font-medium">
+                ≈ ${(financials.cashDebitUsd * dolarBlue).toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS
+              </p>
+            </div>
+
+            {/* Balance Total Consolidado en Pesos */}
+            <div className="bg-gradient-to-br from-indigo-950/40 via-indigo-900/10 to-slate-950 border border-indigo-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-indigo-500/20 rounded-xl text-indigo-300">
+                  <TrendingUp className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-indigo-500/20 text-indigo-300 font-bold px-2 py-0.5 rounded-full border border-indigo-500/30">Líquido Neto</span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-indigo-300 font-medium">Consolidado Total ARS</span>
+                <h3 className="text-2xl font-black tracking-tight text-indigo-100">
+                  ${financials.consolidatedArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
+              </div>
+              <p className="text-[10px] text-indigo-400">Conversión de dólares calculada al Blue</p>
+            </div>
+
+          </section>
+        </div>
+
+        {/* INDICADORES DE CAPITAL - TARJETAS DE CRÉDITO */}
+        <div className="space-y-3">
+          <div className="flex items-center space-x-2 px-1">
+            <CreditCard className="w-4 h-4 text-rose-400" />
+            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Tarjetas de Crédito (Deuda Total & Financiación)</h4>
+          </div>
+          <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            
+            {/* Tarjeta Crédito Total en Pesos */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-rose-500/10 rounded-xl text-rose-400">
+                  <CreditCard className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-rose-500/10 text-rose-400 font-bold px-2 py-0.5 rounded-full border border-rose-500/10">ARS Deuda Total</span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-slate-400">Monto Total de Consumos</span>
+                <h3 className="text-2xl font-black tracking-tight text-white">
+                  ${financials.creditTotalAbsoluteArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
+              </div>
+              <p className="text-[10px] text-rose-400/90 font-medium mt-1">
+                Próximo Vencimiento: ${financials.creditArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+              </p>
+            </div>
+
+            {/* Tarjeta Crédito Total en Dólares */}
+            <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-rose-500/10 rounded-xl text-rose-400">
+                  <DollarSign className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-rose-500/10 text-rose-400 font-bold px-2 py-0.5 rounded-full border border-rose-500/10">USD Deuda Total</span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-slate-400">Monto Total en USD</span>
+                <h3 className="text-2xl font-black tracking-tight text-white">
+                  u$s {financials.creditTotalAbsoluteUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
+              </div>
+              <p className="text-[10px] text-rose-400/90 font-medium mt-1">
+                Próximo Vencimiento: u$s {financials.creditUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+              </p>
+            </div>
+
+            {/* Balance Total Consolidado Deuda Crédito */}
+            <div className="bg-gradient-to-br from-rose-950/40 via-rose-900/10 to-slate-950 border border-rose-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/10 rounded-full blur-3xl"></div>
+              <div className="flex justify-between items-start">
+                <div className="p-2 bg-rose-500/20 rounded-xl text-rose-300">
+                  <TrendingUp className="w-5 h-5" />
+                </div>
+                <span className="text-[10px] bg-rose-500/20 text-rose-300 font-bold px-2 py-0.5 rounded-full border border-rose-500/30">Deuda Consolidada</span>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-rose-300 font-medium">Deuda Consolidada ARS</span>
+                <h3 className="text-2xl font-black tracking-tight text-rose-100">
+                  ${financials.consolidatedCreditTotalAbsoluteArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+                </h3>
+              </div>
+              <p className="text-[10px] text-rose-400">Próxima cuota total: ${financials.consolidatedCreditArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}</p>
+            </div>
+
+          </section>
+        </div>
 
         {/* ADVERTENCIA DE TARJETAS DE CRÉDITO / CUOTAS */}
         <section className="bg-rose-950/20 border border-rose-900/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -686,7 +781,7 @@ export default function App() {
               <form onSubmit={handleSubmitTransaction} className="space-y-4">
                 
                 {/* Categoría */}
-               <div className="space-y-1.5">
+                <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-400">Categoría</label>
                   <select 
                     value={category} 
@@ -910,7 +1005,7 @@ export default function App() {
                     <p className="text-sm font-bold text-slate-400">Sin consumos cargados</p>
                     <p className="text-xs text-slate-500 mt-1 max-w-sm">No encontramos gastos que coincidan con los filtros activos.</p>
                     
-                    {transactions.filter(t => t.syncCode === syncCode).length === 0 && (
+                    {transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === (syncCode || 'ARG-LOCAL')).length === 0 && (
                       <button 
                         onClick={handleLoadMockData}
                         className="mt-4 px-4 py-2 bg-slate-900 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-xl text-xs font-bold transition-all"
