@@ -1,25 +1,79 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, Trash2, CreditCard, DollarSign, RefreshCw, Smartphone, Laptop, 
   Copy, Check, ArrowUpRight, ArrowDownLeft, Wallet, Landmark, HelpCircle, 
   Calendar, Layers, Filter, Search, Shield, Wifi, Info, ListFilter, Users,
-  CheckCircle, TrendingUp, AlertCircle
+  CheckCircle, TrendingUp, AlertCircle, Sparkles, Database
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
-// ================= CONFIGURACIÓN DE FIREBASE =================
-// Las variables globales son provistas por el entorno de ejecución de la aplicación
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// ================= ACCESO SEGURO A VARIABLES GLOBALES =================
+// Previene fallas de compilación y ejecución en Vercel (ReferenceError) usando try/catch
+const getGlobalConfig = () => {
+  try {
+    return typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+  } catch (e) {
+    return null;
+  }
+};
+const getGlobalAppId = () => {
+  try {
+    return typeof __app_id !== 'undefined' ? __app_id : 'finanzarg-default-app';
+  } catch (e) {
+    return 'finanzarg-default-app';
+  }
+};
+const getGlobalAuthToken = () => {
+  try {
+    return typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+  } catch (e) {
+    return null;
+  }
+};
 
-// Sanitizamos el appId para reemplazar barras diagonales "/" por guiones "-" 
-// Esto evita que Firestore interprete la barra como un separador de rutas de subcolecciones
-const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'finanzarg-default-app';
+const rawAppId = getGlobalAppId();
 const appId = rawAppId.replace(/\//g, '-');
+
+// Intentamos obtener una configuración personalizada de Firebase que el usuario haya guardado localmente
+const getLocalFirebaseConfig = () => {
+  try {
+    const stored = localStorage.getItem('finanzarg_custom_firebase');
+    return stored ? JSON.parse(stored) : null;
+  } catch (e) {
+    return null;
+  }
+};
+
+// Determinar qué configuración usar (Prioriza la global de la plataforma, luego la del usuario en Vercel)
+let firebaseConfig = null;
+const globalConfigStr = getGlobalConfig();
+if (globalConfigStr) {
+  try {
+    firebaseConfig = JSON.parse(globalConfigStr);
+  } catch (e) {
+    console.error("Error al leer la configuración global de Firebase:", e);
+  }
+} else {
+  firebaseConfig = getLocalFirebaseConfig();
+}
+
+// Inicialización controlada de Firebase para evitar caídas si no hay config activa
+let firebaseApp = null;
+let auth = null;
+let db = null;
+const isFirebaseActive = !!firebaseConfig;
+
+if (isFirebaseActive) {
+  try {
+    firebaseApp = initializeApp(firebaseConfig);
+    auth = getAuth(firebaseApp);
+    db = getFirestore(firebaseApp);
+  } catch (e) {
+    console.error("Error al inicializar servicios de Firebase:", e);
+  }
+}
 
 export default function App() {
   // --- Estados de Autenticación y Carga ---
@@ -29,6 +83,10 @@ export default function App() {
   const [inputSyncCode, setInputSyncCode] = useState('');
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [toast, setToast] = useState(null);
+
+  // --- Ajustes de base de datos propia ---
+  const [customDbInput, setCustomDbInput] = useState('');
+  const [showDbSettings, setShowDbSettings] = useState(false);
 
   // --- Estados de Negocio ---
   const [transactions, setTransactions] = useState([]);
@@ -48,12 +106,24 @@ export default function App() {
   const [filterCurrency, setFilterCurrency] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // ================= 1. EFECTO DE AUTENTICACIÓN (REGLA 3) =================
+  // Pre-cargar campo de entrada de Firebase si ya existe localmente
   useEffect(() => {
+    const custom = localStorage.getItem('finanzarg_custom_firebase');
+    if (custom) setCustomDbInput(custom);
+  }, []);
+
+  // ================= 1. EFECTO DE AUTENTICACIÓN (HÍBRIDO) =================
+  useEffect(() => {
+    if (!isFirebaseActive || !auth) {
+      setDbLoading(false);
+      return;
+    }
+
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+        const token = getGlobalAuthToken();
+        if (token) {
+          await signInWithCustomToken(auth, token);
         } else {
           await signInAnonymously(auth);
         }
@@ -70,26 +140,30 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // ================= 2. EFECTO PARA CONFIGURACIÓN DEL USUARIO (REGLA 1 & 3) =================
+  // ================= 2. CONFIGURACIÓN DE GRUPO/SYNC CODE (HÍBRIDO) =================
   useEffect(() => {
-    if (!user) return;
+    if (!isFirebaseActive) {
+      const localCode = localStorage.getItem('finanzarg_local_synccode') || 'ARG-LOCAL';
+      setSyncCode(localCode);
+      setDbLoading(false);
+      return;
+    }
+
+    if (!user || !db) return;
 
     const fetchUserSettings = async () => {
-      // Ruta privada para ajustes (Regla 1) con appId sanitizado
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
       try {
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           setSyncCode(docSnap.data().syncCode);
         } else {
-          // Si el usuario es nuevo, generamos un código aleatorio único y lo guardamos
           const randomCode = 'ARG-' + Math.floor(100000 + Math.random() * 900000);
           await setDoc(docRef, { syncCode: randomCode });
           setSyncCode(randomCode);
         }
       } catch (error) {
         console.error("Error leyendo ajustes del usuario:", error);
-        // Fallback local en memoria
         setSyncCode('ARG-TEMPORAL');
       } finally {
         setDbLoading(false);
@@ -99,15 +173,24 @@ export default function App() {
     fetchUserSettings();
   }, [user]);
 
-  // ================= 3. EFECTO PARA CARGAR GASTOS EN TIEMPO REAL (REGLA 1, 2 & 3) =================
+  // ================= 3. ESCUCHA DE GASTOS EN TIEMPO REAL (HÍBRIDO) =================
   useEffect(() => {
-    if (!user || !syncCode) return;
+    if (!isFirebaseActive) {
+      const storedTransactions = localStorage.getItem('finanzarg_transactions');
+      if (storedTransactions) {
+        try {
+          setTransactions(JSON.parse(storedTransactions));
+        } catch (e) {
+          console.error("Error cargando transacciones locales:", e);
+        }
+      }
+      return;
+    }
 
-    // Ruta de datos públicos con código de sincronización compartido (Regla 1)
+    if (!user || !syncCode || !db) return;
+
     const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
 
-    // Escuchamos en tiempo real para sincronizar instantáneamente entre dispositivos
-    // Nota: Traemos la colección simple y filtramos en memoria por regla de no queries complejas (Regla 2)
     const unsubscribe = onSnapshot(colRef, 
       (snapshot) => {
         const list = [];
@@ -152,10 +235,19 @@ export default function App() {
     }
 
     const cleanCode = inputSyncCode.trim().toUpperCase();
+
+    if (!isFirebaseActive) {
+      setSyncCode(cleanCode);
+      localStorage.setItem('finanzarg_local_synccode', cleanCode);
+      setInputSyncCode('');
+      setShowSyncModal(false);
+      triggerToast(`¡Conectado localmente al grupo ${cleanCode}!`, "success");
+      return;
+    }
+
     setDbLoading(true);
 
     try {
-      // Guardamos la configuración en su perfil privado de Firebase
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
       await setDoc(docRef, { syncCode: cleanCode });
       setSyncCode(cleanCode);
@@ -170,10 +262,9 @@ export default function App() {
     }
   };
 
-  // ================= REGISTRAR TRANSACCIÓN (WRITE) =================
+  // ================= REGISTRAR TRANSACCIÓN (HÍBRIDO) =================
   const handleSubmitTransaction = async (e) => {
     e.preventDefault();
-    if (!user) return;
 
     if (!description.trim() || !amount || parseFloat(amount) <= 0) {
       triggerToast("Completá descripción y monto válido", "error");
@@ -187,16 +278,30 @@ export default function App() {
       paymentMethod,
       installments: paymentMethod === 'credito' ? parseInt(installments) : 1,
       category,
-      syncCode, // Guardamos bajo este grupo
+      syncCode,
       createdAt: Date.now(),
-      author: user.uid
+      author: user ? user.uid : 'local-user'
     };
+
+    if (!isFirebaseActive) {
+      const updated = [{ id: 'local-' + Date.now(), ...newTransaction }, ...transactions];
+      setTransactions(updated);
+      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+      
+      setDescription('');
+      setAmount('');
+      setPaymentMethod('efectivo');
+      setInstallments(1);
+      triggerToast("Gasto guardado en tu dispositivo", "success");
+      return;
+    }
+
+    if (!user || !db) return;
 
     try {
       const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
       await addDoc(colRef, newTransaction);
       
-      // Reset formulario
       setDescription('');
       setAmount('');
       setPaymentMethod('efectivo');
@@ -208,9 +313,20 @@ export default function App() {
     }
   };
 
-  // ================= ELIMINAR TRANSACCIÓN (DELETE) =================
+  // ================= ELIMINAR TRANSACCIÓN (HÍBRIDO) =================
   const handleDeleteTransaction = async () => {
-    if (!user || !deleteId) return;
+    if (!deleteId) return;
+
+    if (!isFirebaseActive) {
+      const updated = transactions.filter(t => t.id !== deleteId);
+      setTransactions(updated);
+      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+      setDeleteId(null);
+      triggerToast("Registro eliminado con éxito", "success");
+      return;
+    }
+
+    if (!user || !db) return;
 
     try {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'transactions', deleteId);
@@ -224,22 +340,45 @@ export default function App() {
     }
   };
 
-  // ================= PREPARACIÓN DE DATOS (REGLA 2: EN MEMORIA) =================
+  // ================= CONFIGURAR BASE DE DATOS PROPIA (JSON) =================
+  const handleSaveCustomFirebase = (e) => {
+    e.preventDefault();
+    try {
+      const parsed = JSON.parse(customDbInput.trim());
+      if (!parsed.apiKey || !parsed.projectId || !parsed.authDomain) {
+        triggerToast("Formato inválido. Falta apiKey, authDomain o projectId", "error");
+        return;
+      }
+      localStorage.setItem('finanzarg_custom_firebase', JSON.stringify(parsed));
+      triggerToast("¡Configuración guardada! Reiniciando...", "success");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (err) {
+      triggerToast("Error: Estructura JSON inválida", "error");
+    }
+  };
+
+  const handleClearCustomFirebase = () => {
+    localStorage.removeItem('finanzarg_custom_firebase');
+    triggerToast("Restablecido a Modo Local. Reiniciando...", "success");
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
+
+  // ================= FILTRADO Y ORDEN DE DATOS (EN MEMORIA) =================
   const filteredAndSortedTransactions = useMemo(() => {
-    // Filtro 1: Código de sincronización activo
     let result = transactions.filter(t => t.syncCode === syncCode);
 
-    // Filtro 2: Tipo de Pago
     if (filterMethod !== 'all') {
       result = result.filter(t => t.paymentMethod === filterMethod);
     }
 
-    // Filtro 3: Moneda
     if (filterCurrency !== 'all') {
       result = result.filter(t => t.currency === filterCurrency);
     }
 
-    // Filtro 4: Buscador
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase();
       result = result.filter(t => 
@@ -248,7 +387,6 @@ export default function App() {
       );
     }
 
-    // Ordenar por fecha descendiente (más nuevos primero)
     return result.sort((a, b) => b.createdAt - a.createdAt);
   }, [transactions, syncCode, filterMethod, filterCurrency, searchQuery]);
 
@@ -259,14 +397,11 @@ export default function App() {
     let creditArs = 0;
     let creditUsd = 0;
 
-    // Filtramos solo las de nuestro grupo activo
     const myGroup = transactions.filter(t => t.syncCode === syncCode);
 
     myGroup.forEach(t => {
       const value = t.amount;
       if (t.paymentMethod === 'credito') {
-        // En tarjetas de crédito sumamos la cuota mensual para el control de deuda de este mes
-        // O el monto completo dividido el número de cuotas
         const monthlyInstallment = value / (t.installments || 1);
         if (t.currency === 'ARS') {
           creditArs += monthlyInstallment;
@@ -274,7 +409,6 @@ export default function App() {
           creditUsd += monthlyInstallment;
         }
       } else {
-        // Efectivo y Débito
         if (t.currency === 'ARS') {
           cashDebitArs += value;
         } else {
@@ -302,7 +436,6 @@ export default function App() {
     const myGroup = transactions.filter(t => t.syncCode === syncCode);
 
     myGroup.forEach(t => {
-      // Convertimos a pesos para consolidar el gráfico de torta/barras
       const amountInPesos = t.currency === 'ARS' ? t.amount : t.amount * dolarBlue;
       counts[t.category] = (counts[t.category] || 0) + amountInPesos;
     });
@@ -316,24 +449,31 @@ export default function App() {
     })).sort((a, b) => b.value - a.value);
   }, [transactions, syncCode, dolarBlue]);
 
-  // Carga de ejemplo si el grupo está vacío
+  // Carga de ejemplo si el grupo está vacío (Híbrido)
   const handleLoadMockData = async () => {
-    if (!user || !syncCode) return;
-    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
-    
     const mocks = [
-      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 * 2 },
-      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 },
-      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode, createdAt: Date.now() },
-      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode, createdAt: Date.now() - 50000 },
-      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode, createdAt: Date.now() - 120000 }
+      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 * 2, author: user ? user.uid : 'local-user' },
+      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000, author: user ? user.uid : 'local-user' },
+      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode, createdAt: Date.now(), author: user ? user.uid : 'local-user' },
+      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode, createdAt: Date.now() - 50000, author: user ? user.uid : 'local-user' },
+      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode, createdAt: Date.now() - 120000, author: user ? user.uid : 'local-user' }
     ];
 
+    if (!isFirebaseActive) {
+      const updated = [...mocks, ...transactions];
+      setTransactions(updated);
+      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+      triggerToast("Cargados datos de prueba localmente", "success");
+      return;
+    }
+
+    if (!user || !db) return;
     try {
+      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
       for (const m of mocks) {
         await addDoc(colRef, m);
       }
-      triggerToast("Cargados datos de simulación", "success");
+      triggerToast("Cargados datos de simulación en la nube", "success");
     } catch (e) {
       console.error(e);
     }
@@ -359,7 +499,15 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-black tracking-tight text-white">FinanzArg</h1>
-              <span className="bg-indigo-500/10 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-indigo-500/20">Cloud Sync</span>
+              {isFirebaseActive ? (
+                <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-emerald-500/20 flex items-center gap-1">
+                  <Wifi className="w-2.5 h-2.5" /> Nube Sincronizada
+                </span>
+              ) : (
+                <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-amber-500/20 flex items-center gap-1">
+                  <Info className="w-2.5 h-2.5" /> Modo Local
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400 font-medium">Billetera de Pesos & Dólares multi-dispositivo</p>
           </div>
@@ -398,6 +546,27 @@ export default function App() {
 
       {/* CUERPO PRINCIPAL */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
+
+        {/* MENSAJE EXPLICATIVO PARA MODO LOCAL */}
+        {!isFirebaseActive && (
+          <section className="bg-slate-900/80 border border-indigo-900/40 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-bold text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-indigo-400" />
+                ¡Estás en Modo Local! (Offline)
+              </h4>
+              <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+                Tus gastos se guardan de forma segura en este navegador. Para sincronizarlos entre tu computadora y celular, haz clic en el botón de <strong>Vincular</strong> arriba a la derecha para conectar tu propia base de datos gratuita de Firebase.
+              </p>
+            </div>
+            <button 
+              onClick={() => { setShowSyncModal(true); setShowDbSettings(true); }}
+              className="bg-indigo-950 hover:bg-indigo-900 border border-indigo-800/40 text-indigo-300 text-xs font-bold px-4 py-2 rounded-xl shrink-0 transition-colors"
+            >
+              Conectar Nube Gratis
+            </button>
+          </section>
+        )}
 
         {/* CONTROL DE COTIZACIÓN BLUE */}
         <section className="bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -754,11 +923,11 @@ export default function App() {
                         {/* Icono de Método de Pago */}
                         <div className={`p-2 rounded-xl shrink-0 ${t.paymentMethod === 'credito' ? 'bg-rose-500/10 text-rose-400' : t.paymentMethod === 'debito' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
                           {t.paymentMethod === 'credito' ? (
-                            <CreditCard className="w-4 h-4" />
+                            <CreditCard className="w-4.5 h-4.5" />
                           ) : t.paymentMethod === 'debito' ? (
-                            <Landmark className="w-4 h-4" />
+                            <Landmark className="w-4.5 h-4.5" />
                           ) : (
-                            <Wallet className="w-4 h-4" />
+                            <Wallet className="w-4.5 h-4.5" />
                           )}
                         </div>
 
@@ -818,71 +987,126 @@ export default function App() {
       {/* FOOTER */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500">
         <p>FinanzArg Cloud Wallet — Desarrollado para sincronización en tiempo real.</p>
-        <p className="text-[10px] text-slate-600 mt-0.5">Utiliza infraestructura Firestore sin almacenamiento en disco local.</p>
+        <p className="text-[10px] text-slate-600 mt-0.5">Utiliza infraestructura de base de datos híbrida local y en la nube.</p>
       </footer>
 
-      {/* ================= MODAL: VINCULAR OTRO DISPOSITIVO ================= */}
+      {/* ================= MODAL: VINCULAR OTRO DISPOSITIVO / AJUSTES NUBE ================= */}
       {showSyncModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center pb-2 border-b border-slate-800">
               <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
                 <Smartphone className="text-indigo-400 w-4 h-4" />
                 Vincular Dispositivos
               </h4>
               <button 
-                onClick={() => setShowSyncModal(false)}
+                onClick={() => { setShowSyncModal(false); setShowDbSettings(false); }}
                 className="text-xs text-slate-500 hover:text-white font-bold"
               >
                 Cerrar
               </button>
             </div>
 
-            <div className="space-y-2.5 text-xs text-slate-400 leading-relaxed">
-              <p>
-                Para poder ingresar gastos en tu celular y verlos en tiempo real en tu computadora, ambos deben estar usando el mismo <strong>Código de Sincronización</strong>.
-              </p>
+            <div className="space-y-4 text-xs text-slate-400 leading-relaxed">
               
-              <div className="p-3 bg-slate-950 rounded-xl border border-slate-850 flex items-center justify-between">
-                <div>
-                  <span className="text-[9px] text-slate-500 uppercase font-black block">Código de este dispositivo:</span>
-                  <span className="text-sm font-mono font-bold text-white tracking-widest">{syncCode}</span>
+              {/* Sincronización general */}
+              <div className="space-y-2">
+                <p>
+                  Para poder ingresar gastos en tu celular y verlos en tiempo real en tu computadora, ambos deben estar usando el mismo <strong>Código de Sincronización</strong>.
+                </p>
+                
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-850 flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] text-slate-500 uppercase font-black block">Código de este dispositivo:</span>
+                    <span className="text-sm font-mono font-bold text-white tracking-widest">{syncCode}</span>
+                  </div>
+                  <button 
+                    onClick={handleCopyCode}
+                    className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg font-bold"
+                  >
+                    Copiar
+                  </button>
                 </div>
-                <button 
-                  onClick={handleCopyCode}
-                  className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg font-bold"
-                >
-                  Copiar
-                </button>
+
+                <div className="pt-2">
+                  <label className="text-[10px] uppercase font-black text-slate-400 block mb-1.5">¿Querés unirte a otro grupo?</label>
+                  <form onSubmit={handleConnectSyncCode} className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="Ej. ARG-123456"
+                      value={inputSyncCode}
+                      onChange={(e) => setInputSyncCode(e.target.value)}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
+                    />
+                    <button 
+                      type="submit"
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg"
+                    >
+                      Unirse
+                    </button>
+                  </form>
+                  <span className="text-[9px] text-slate-500 italic mt-1 block">
+                    Cuidado: Al cambiar de grupo verás únicamente los datos correspondientes al nuevo código.
+                  </span>
+                </div>
               </div>
 
-              <div className="border-t border-slate-800/60 my-4 pt-4 space-y-2">
-                <label className="text-[10px] uppercase font-black text-slate-400 block">¿Querés unirte a otro grupo?</label>
-                <form onSubmit={handleConnectSyncCode} className="flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="Ej. ARG-123456"
-                    value={inputSyncCode}
-                    onChange={(e) => setInputSyncCode(e.target.value)}
-                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
-                  />
-                  <button 
-                    type="submit"
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg"
-                  >
-                    Unirse
-                  </button>
-                </form>
-                <span className="text-[9px] text-slate-500 italic block">
-                  Cuidado: Al cambiar de grupo dejarás de ver los gastos actuales para conectarte a la nueva base.
-                </span>
+              {/* Ajustes avanzados de base de datos para despliegue independiente */}
+              <div className="border-t border-slate-800/80 pt-4 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDbSettings(!showDbSettings)}
+                  className="flex items-center justify-between w-full text-[10px] uppercase font-black text-slate-400 hover:text-white transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Database className="w-3.5 h-3.5 text-indigo-400" />
+                    Base de Datos Propia (Avanzado Vercel)
+                  </span>
+                  <span>{showDbSettings ? 'Ocultar' : 'Mostrar'}</span>
+                </button>
+
+                {showDbSettings && (
+                  <div className="space-y-3 pt-2 animate-fade-in bg-slate-950/40 p-3 rounded-2xl border border-slate-850">
+                    <p className="text-[11px] text-slate-400">
+                      Si hiciste el despliegue en tu propia cuenta de Vercel y deseas sincronización en tiempo real, puedes vincular una base de datos de Firebase Firestore de forma 100% gratuita.
+                    </p>
+                    <form onSubmit={handleSaveCustomFirebase} className="space-y-2">
+                      <label className="text-[9px] font-bold text-slate-500 block">Firebase Config (JSON format):</label>
+                      <textarea
+                        rows="5"
+                        placeholder='{ "apiKey": "AIza...", "authDomain": "...", "projectId": "..." }'
+                        value={customDbInput}
+                        onChange={(e) => setCustomDbInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[10px] font-mono text-slate-200 focus:outline-none"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors flex-1"
+                        >
+                          Guardar y Conectar
+                        </button>
+                        {localStorage.getItem('finanzarg_custom_firebase') && (
+                          <button
+                            type="button"
+                            onClick={handleClearCustomFirebase}
+                            className="bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-300 text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors"
+                          >
+                            Desconectar Nube
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  </div>
+                )}
               </div>
+
             </div>
           </div>
         </div>
       )}
 
-      {/* ================= MODAL: CONFIRMACIÓN DE BORRADO (REGLA MODAL) ================= */}
+      {/* ================= MODAL: CONFIRMACIÓN DE BORRADO ================= */}
       {deleteId && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
@@ -891,7 +1115,7 @@ export default function App() {
               ¿Eliminar Gasto?
             </h4>
             <p className="text-xs text-slate-400">
-              Esta acción eliminará de forma permanente el registro en la nube para todos los dispositivos vinculados. Esta operación no puede deshacerse.
+              Esta acción eliminará de forma permanente el registro seleccionado. Esta operación no se puede deshacer.
             </p>
             <div className="flex gap-2.5 justify-end">
               <button 
