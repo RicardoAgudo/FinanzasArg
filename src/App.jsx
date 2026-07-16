@@ -686,7 +686,7 @@ export default function App() {
               <form onSubmit={handleSubmitTransaction} className="space-y-4">
                 
                 {/* Categoría */}
-                <div className="space-y-1.5">
+               <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-slate-400">Categoría</label>
                   <select 
                     value={category} 
@@ -697,6 +697,9 @@ export default function App() {
                     <option value="Servicios">💡 Servicios</option>
                     <option value="Transporte">🚌 Transporte</option>
                     <option value="Ocio">🍿 Ocio y Salidas</option>
+                    <option value="Entretenimiento">🎬 Entretenimiento</option>
+                    <option value="Salud">🩺 Salud</option>
+                    <option value="Compras">🛍️ Compras</option>
                     <option value="Otros">📦 Otros consumos</option>
                   </select>
                 </div>
