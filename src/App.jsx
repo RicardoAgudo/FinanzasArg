@@ -1,834 +1,811 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
-  DollarSign, 
-  CreditCard, 
-  Coins, 
-  Plus, 
-  Trash2, 
-  Search, 
-  SlidersHorizontal, 
-  TrendingDown, 
-  Calendar, 
-  Tag, 
-  Info, 
-  Check, 
-  Sparkles, 
-  X, 
-  ArrowDownRight, 
-  PieChart, 
-  Percent,
-  TrendingUp,
-  FileText
+  Plus, Trash2, CreditCard, DollarSign, RefreshCw, Smartphone, Laptop, 
+  Copy, Check, ArrowUpRight, ArrowDownLeft, Wallet, Landmark, HelpCircle, 
+  Calendar, Layers, Filter, Search, Shield, Wifi, Info, ListFilter, Users,
+  CheckCircle, TrendingUp, AlertCircle
 } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 
-const INITIAL_EXPENSES = [
-  {
-    id: 'exp-1',
-    title: 'Supermercado Coto',
-    amount: 48500,
-    currency: 'ARS',
-    paymentMethod: 'debit',
-    category: 'Comida/Super',
-    date: '2026-07-15',
-    installments: 1,
-    cardName: 'Visa Galicia Débito',
-    notes: 'Compra mensual de mercadería básica'
-  },
-  {
-    id: 'exp-2',
-    title: 'Suscripción Netflix & Spotify',
-    amount: 14.99,
-    currency: 'USD',
-    paymentMethod: 'credit',
-    category: 'Entretenimiento',
-    date: '2026-07-10',
-    installments: 1,
-    cardName: 'Mastercard Santander',
-    notes: 'Suscripción mensual en dólares'
-  },
-  {
-    id: 'exp-3',
-    title: 'Carga de Nafta YPF',
-    amount: 32000,
-    currency: 'ARS',
-    paymentMethod: 'debit',
-    category: 'Transporte',
-    date: '2026-07-14',
-    installments: 1,
-    cardName: 'Visa Galicia Débito',
-    notes: 'Llenado de tanque parcial'
-  },
-  {
-    id: 'exp-4',
-    title: 'Zapatillas en 6 cuotas',
-    amount: 120000,
-    currency: 'ARS',
-    paymentMethod: 'credit',
-    category: 'Ropa/Calzado',
-    date: '2026-07-05',
-    installments: 6,
-    cardName: 'Visa Macro',
-    notes: '6 cuotas fijas de $20.000'
-  },
-  {
-    id: 'exp-5',
-    title: 'Verdulería del barrio',
-    amount: 8500,
-    currency: 'ARS',
-    paymentMethod: 'cash',
-    category: 'Comida/Super',
-    date: '2026-07-16',
-    installments: 1,
-    cardName: '',
-    notes: 'Efectivo con descuento'
-  },
-  {
-    id: 'exp-6',
-    title: 'Cena Bodegón',
-    amount: 35000,
-    currency: 'ARS',
-    paymentMethod: 'cash',
-    category: 'Salidas/Restaurantes',
-    date: '2026-07-12',
-    installments: 1,
-    cardName: '',
-    notes: 'Dividimos con amigos, pagué mi parte'
-  },
-  {
-    id: 'exp-7',
-    title: 'Compra de Termo Stanley',
-    amount: 85,
-    currency: 'USD',
-    paymentMethod: 'credit',
-    category: 'Hogar',
-    date: '2026-07-02',
-    installments: 1,
-    cardName: 'Amex Directa',
-    notes: 'Traído por importador'
-  }
-];
+// ================= CONFIGURACIÓN DE FIREBASE =================
+// Las variables globales son provistas por el entorno de ejecución de la aplicación
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
 
-const CATEGORIES = [
-  'Comida/Super',
-  'Salidas/Restaurantes',
-  'Servicios/Impuestos',
-  'Transporte',
-  'Entretenimiento',
-  'Tecnología',
-  'Ropa/Calzado',
-  'Hogar',
-  'Salud',
-  'Otros'
-];
-
-const PAYMENT_METHODS = {
-  cash: { name: 'Efectivo', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', icon: Coins },
-  debit: { name: 'Tarjeta de Débito', color: 'text-blue-400 bg-blue-500/10 border-blue-500/20', icon: DollarSign },
-  credit: { name: 'Tarjeta de Crédito', color: 'text-amber-400 bg-amber-500/10 border-amber-500/20', icon: CreditCard }
-};
+// Sanitizamos el appId para reemplazar barras diagonales "/" por guiones "-" 
+// Esto evita que Firestore interprete la barra como un separador de rutas de subcolecciones
+const rawAppId = typeof __app_id !== 'undefined' ? __app_id : 'finanzarg-default-app';
+const appId = rawAppId.replace(/\//g, '-');
 
 export default function App() {
-  const [expenses, setExpenses] = useState(INITIAL_EXPENSES);
-  const [exchangeRate, setExchangeRate] = useState(1350); // Cotización por defecto del Dólar Blue
-  const [showAddForm, setShowAddForm] = useState(false);
+  // --- Estados de Autenticación y Carga ---
+  const [user, setUser] = useState(null);
+  const [dbLoading, setDbLoading] = useState(true);
+  const [syncCode, setSyncCode] = useState('');
+  const [inputSyncCode, setInputSyncCode] = useState('');
+  const [showSyncModal, setShowSyncModal] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // Filtros
+  // --- Estados de Negocio ---
+  const [transactions, setTransactions] = useState([]);
+  const [dolarBlue, setDolarBlue] = useState(1380); // Cotización por defecto ARS/USD
+  const [deleteId, setDeleteId] = useState(null); // Para modal de confirmación
+
+  // --- Estados del Formulario de Registro ---
+  const [description, setDescription] = useState('');
+  const [amount, setAmount] = useState('');
+  const [currency, setCurrency] = useState('ARS'); // ARS o USD
+  const [paymentMethod, setPaymentMethod] = useState('efectivo'); // efectivo, debito, credito
+  const [installments, setInstallments] = useState(1); // 1, 3, 6, 12, 18, 24 cuotas
+  const [category, setCategory] = useState('Comida'); // Comida, Servicios, Transporte, Ocio, Otros
+
+  // --- Estados de Filtrado ---
+  const [filterMethod, setFilterMethod] = useState('all');
+  const [filterCurrency, setFilterCurrency] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [currencyFilter, setCurrencyFilter] = useState('all');
-  const [methodFilter, setMethodFilter] = useState('all');
-  const [categoryFilter, setCategoryFilter] = useState('all');
 
-  // Estado del Formulario de carga
-  const [newTitle, setNewTitle] = useState('');
-  const [newAmount, setNewAmount] = useState('');
-  const [newCurrency, setNewCurrency] = useState('ARS');
-  const [newMethod, setNewMethod] = useState('debit');
-  const [newCategory, setNewCategory] = useState('Comida/Super');
-  const [newDate, setNewDate] = useState(new Date().toISOString().split('T')[0]);
-  const [newInstallments, setNewInstallments] = useState(1);
-  const [newCardName, setNewCardName] = useState('');
-  const [newNotes, setNewNotes] = useState('');
+  // ================= 1. EFECTO DE AUTENTICACIÓN (REGLA 3) =================
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Error de inicialización de autenticación:", error);
+        triggerToast("Error de conexión con el servidor", "error");
+      }
+    };
+    initAuth();
 
-  const triggerToast = (message, type = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
-  };
+    const unsubscribe = onAuthStateChanged(auth, (usr) => {
+      setUser(usr);
+    });
+    return () => unsubscribe();
+  }, []);
 
-  const handleAddExpense = (e) => {
-    e.preventDefault();
-    
-    if (!newTitle.trim()) {
-      triggerToast('Por favor, ingresá una descripción o comercio.', 'error');
-      return;
-    }
-    if (!newAmount || parseFloat(newAmount) <= 0) {
-      triggerToast('Por favor, ingresá un monto mayor a cero.', 'error');
-      return;
-    }
+  // ================= 2. EFECTO PARA CONFIGURACIÓN DEL USUARIO (REGLA 1 & 3) =================
+  useEffect(() => {
+    if (!user) return;
 
-    const newExpense = {
-      id: `exp-${Date.now()}`,
-      title: newTitle,
-      amount: parseFloat(newAmount),
-      currency: newCurrency,
-      paymentMethod: newMethod,
-      category: newCategory,
-      date: newDate,
-      installments: newMethod === 'credit' ? parseInt(newInstallments) : 1,
-      cardName: newMethod !== 'cash' ? newCardName : '',
-      notes: newNotes
+    const fetchUserSettings = async () => {
+      // Ruta privada para ajustes (Regla 1) con appId sanitizado
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
+      try {
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setSyncCode(docSnap.data().syncCode);
+        } else {
+          // Si el usuario es nuevo, generamos un código aleatorio único y lo guardamos
+          const randomCode = 'ARG-' + Math.floor(100000 + Math.random() * 900000);
+          await setDoc(docRef, { syncCode: randomCode });
+          setSyncCode(randomCode);
+        }
+      } catch (error) {
+        console.error("Error leyendo ajustes del usuario:", error);
+        // Fallback local en memoria
+        setSyncCode('ARG-TEMPORAL');
+      } finally {
+        setDbLoading(false);
+      }
     };
 
-    setExpenses([newExpense, ...expenses]);
-    triggerToast('¡Gasto registrado con éxito!');
+    fetchUserSettings();
+  }, [user]);
+
+  // ================= 3. EFECTO PARA CARGAR GASTOS EN TIEMPO REAL (REGLA 1, 2 & 3) =================
+  useEffect(() => {
+    if (!user || !syncCode) return;
+
+    // Ruta de datos públicos con código de sincronización compartido (Regla 1)
+    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+
+    // Escuchamos en tiempo real para sincronizar instantáneamente entre dispositivos
+    // Nota: Traemos la colección simple y filtramos en memoria por regla de no queries complejas (Regla 2)
+    const unsubscribe = onSnapshot(colRef, 
+      (snapshot) => {
+        const list = [];
+        snapshot.forEach((doc) => {
+          list.push({ id: doc.id, ...doc.data() });
+        });
+        setTransactions(list);
+      },
+      (error) => {
+        console.error("Error al suscribirse a transacciones:", error);
+        triggerToast("Error de lectura en base de datos", "error");
+      }
+    );
+
+    return () => unsubscribe();
+  }, [user, syncCode]);
+
+  // ================= AUXILIARES Y TOASTS =================
+  const triggerToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 3000);
+  };
+
+  const handleCopyCode = () => {
+    const textField = document.createElement('textarea');
+    textField.innerText = syncCode;
+    document.body.appendChild(textField);
+    textField.select();
+    document.execCommand('copy');
+    textField.remove();
+    triggerToast("¡Código copiado! Pegalo en tu otro dispositivo", "success");
+  };
+
+  // ================= CAMBIAR CÓDIGO DE SINCRONIZACIÓN =================
+  const handleConnectSyncCode = async (e) => {
+    e.preventDefault();
+    if (!inputSyncCode.trim() || inputSyncCode.trim().length < 4) {
+      triggerToast("Ingresá un código válido", "error");
+      return;
+    }
+
+    const cleanCode = inputSyncCode.trim().toUpperCase();
+    setDbLoading(true);
+
+    try {
+      // Guardamos la configuración en su perfil privado de Firebase
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
+      await setDoc(docRef, { syncCode: cleanCode });
+      setSyncCode(cleanCode);
+      setInputSyncCode('');
+      setShowSyncModal(false);
+      triggerToast(`¡Conectado exitosamente al grupo ${cleanCode}!`, "success");
+    } catch (e) {
+      console.error("Error al actualizar código de sincronización:", e);
+      triggerToast("No se pudo conectar al grupo", "error");
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  // ================= REGISTRAR TRANSACCIÓN (WRITE) =================
+  const handleSubmitTransaction = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+
+    if (!description.trim() || !amount || parseFloat(amount) <= 0) {
+      triggerToast("Completá descripción y monto válido", "error");
+      return;
+    }
+
+    const newTransaction = {
+      description: description.trim(),
+      amount: parseFloat(amount),
+      currency,
+      paymentMethod,
+      installments: paymentMethod === 'credito' ? parseInt(installments) : 1,
+      category,
+      syncCode, // Guardamos bajo este grupo
+      createdAt: Date.now(),
+      author: user.uid
+    };
+
+    try {
+      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+      await addDoc(colRef, newTransaction);
+      
+      // Reset formulario
+      setDescription('');
+      setAmount('');
+      setPaymentMethod('efectivo');
+      setInstallments(1);
+      triggerToast("Gasto registrado con éxito en la nube", "success");
+    } catch (error) {
+      console.error("Error al registrar transacción:", error);
+      triggerToast("No se pudo guardar en la nube", "error");
+    }
+  };
+
+  // ================= ELIMINAR TRANSACCIÓN (DELETE) =================
+  const handleDeleteTransaction = async () => {
+    if (!user || !deleteId) return;
+
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'transactions', deleteId);
+      await deleteDoc(docRef);
+      triggerToast("Registro eliminado con éxito", "success");
+    } catch (error) {
+      console.error("Error al eliminar:", error);
+      triggerToast("No se pudo borrar el registro", "error");
+    } finally {
+      setDeleteId(null);
+    }
+  };
+
+  // ================= PREPARACIÓN DE DATOS (REGLA 2: EN MEMORIA) =================
+  const filteredAndSortedTransactions = useMemo(() => {
+    // Filtro 1: Código de sincronización activo
+    let result = transactions.filter(t => t.syncCode === syncCode);
+
+    // Filtro 2: Tipo de Pago
+    if (filterMethod !== 'all') {
+      result = result.filter(t => t.paymentMethod === filterMethod);
+    }
+
+    // Filtro 3: Moneda
+    if (filterCurrency !== 'all') {
+      result = result.filter(t => t.currency === filterCurrency);
+    }
+
+    // Filtro 4: Buscador
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(t => 
+        t.description.toLowerCase().includes(q) || 
+        t.category.toLowerCase().includes(q)
+      );
+    }
+
+    // Ordenar por fecha descendiente (más nuevos primero)
+    return result.sort((a, b) => b.createdAt - a.createdAt);
+  }, [transactions, syncCode, filterMethod, filterCurrency, searchQuery]);
+
+  // ================= CÁLCULO DE TOTALES (EN MEMORIA) =================
+  const financials = useMemo(() => {
+    let cashDebitArs = 0;
+    let cashDebitUsd = 0;
+    let creditArs = 0;
+    let creditUsd = 0;
+
+    // Filtramos solo las de nuestro grupo activo
+    const myGroup = transactions.filter(t => t.syncCode === syncCode);
+
+    myGroup.forEach(t => {
+      const value = t.amount;
+      if (t.paymentMethod === 'credito') {
+        // En tarjetas de crédito sumamos la cuota mensual para el control de deuda de este mes
+        // O el monto completo dividido el número de cuotas
+        const monthlyInstallment = value / (t.installments || 1);
+        if (t.currency === 'ARS') {
+          creditArs += monthlyInstallment;
+        } else {
+          creditUsd += monthlyInstallment;
+        }
+      } else {
+        // Efectivo y Débito
+        if (t.currency === 'ARS') {
+          cashDebitArs += value;
+        } else {
+          cashDebitUsd += value;
+        }
+      }
+    });
+
+    const consolidatedArs = cashDebitArs + (cashDebitUsd * dolarBlue);
+    const consolidatedCreditArs = creditArs + (creditUsd * dolarBlue);
+
+    return {
+      cashDebitArs,
+      cashDebitUsd,
+      creditArs,
+      creditUsd,
+      consolidatedArs,
+      consolidatedCreditArs
+    };
+  }, [transactions, syncCode, dolarBlue]);
+
+  // ================= CATEGORÍAS GRÁFICOS (EN MEMORIA) =================
+  const categoryStats = useMemo(() => {
+    const counts = {};
+    const myGroup = transactions.filter(t => t.syncCode === syncCode);
+
+    myGroup.forEach(t => {
+      // Convertimos a pesos para consolidar el gráfico de torta/barras
+      const amountInPesos = t.currency === 'ARS' ? t.amount : t.amount * dolarBlue;
+      counts[t.category] = (counts[t.category] || 0) + amountInPesos;
+    });
+
+    const totalInPesos = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
+
+    return Object.entries(counts).map(([name, value]) => ({
+      name,
+      value,
+      percentage: Math.round((value / totalInPesos) * 100)
+    })).sort((a, b) => b.value - a.value);
+  }, [transactions, syncCode, dolarBlue]);
+
+  // Carga de ejemplo si el grupo está vacío
+  const handleLoadMockData = async () => {
+    if (!user || !syncCode) return;
+    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
     
-    // Resetear formulario
-    setNewTitle('');
-    setNewAmount('');
-    setNewInstallments(1);
-    setNewCardName('');
-    setNewNotes('');
-    setShowAddForm(false);
+    const mocks = [
+      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 * 2 },
+      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode, createdAt: Date.now() - 86400000 },
+      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode, createdAt: Date.now() },
+      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode, createdAt: Date.now() - 50000 },
+      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode, createdAt: Date.now() - 120000 }
+    ];
+
+    try {
+      for (const m of mocks) {
+        await addDoc(colRef, m);
+      }
+      triggerToast("Cargados datos de simulación", "success");
+    } catch (e) {
+      console.error(e);
+    }
   };
-
-  const handleDeleteExpense = (id) => {
-    setExpenses(expenses.filter(e => e.id !== id));
-    triggerToast('Gasto eliminado', 'info');
-  };
-
-  // Totales puros
-  const totalARS = expenses
-    .filter(e => e.currency === 'ARS')
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const totalUSD = expenses
-    .filter(e => e.currency === 'USD')
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  // Consolidado total en pesos usando cotización
-  const totalConsolidatedARS = totalARS + (totalUSD * exchangeRate);
-
-  // Desglose por método de pago
-  const methodTotals = expenses.reduce((acc, e) => {
-    const amt = e.currency === 'USD' ? e.amount * exchangeRate : e.amount;
-    if (!acc[e.paymentMethod]) acc[e.paymentMethod] = 0;
-    acc[e.paymentMethod] += amt;
-    return acc;
-  }, { cash: 0, debit: 0, credit: 0 });
-
-  // Desglose por categoría (Consolidado en ARS)
-  const categoryTotals = expenses.reduce((acc, e) => {
-    const amt = e.currency === 'USD' ? e.amount * exchangeRate : e.amount;
-    if (!acc[e.category]) acc[e.category] = 0;
-    acc[e.category] += amt;
-    return acc;
-  }, {});
-
-  const filteredExpenses = expenses.filter(e => {
-    const matchesSearch = e.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          (e.notes && e.notes.toLowerCase().includes(searchQuery.toLowerCase())) ||
-                          (e.cardName && e.cardName.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesCurrency = currencyFilter === 'all' || e.currency === currencyFilter;
-    const matchesMethod = methodFilter === 'all' || e.paymentMethod === methodFilter;
-    const matchesCategory = categoryFilter === 'all' || e.category === categoryFilter;
-
-    return matchesSearch && matchesCurrency && matchesMethod && matchesCategory;
-  });
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col antialiased selection:bg-emerald-500 selection:text-slate-950">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
       
-      {/* HEADER DE LA APP */}
-      <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md px-6 py-4 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-          
-          {/* Logo */}
-          <div className="flex items-center space-x-3">
-            <div className="bg-gradient-to-tr from-emerald-500 via-teal-600 to-indigo-600 p-2.5 rounded-xl shadow-lg shadow-emerald-500/10">
-              <Coins className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-black tracking-tight bg-gradient-to-r from-emerald-400 via-teal-200 to-indigo-300 bg-clip-text text-transparent">
-                FinanzArg
-              </h1>
-              <p className="text-xs text-slate-400 font-medium">Billetera Multimoneda & Control de Cuotas</p>
-            </div>
-          </div>
-
-          {/* Dólar Blue Rate Selector */}
-          <div className="flex items-center space-x-3 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2">
-            <span className="text-xs font-semibold text-slate-400 flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              Cotización Dólar Blue:
-            </span>
-            <div className="flex items-center">
-              <span className="text-xs font-bold text-emerald-400 mr-1">$</span>
-              <input 
-                type="number" 
-                value={exchangeRate}
-                onChange={(e) => setExchangeRate(Math.max(1, parseFloat(e.target.value) || 0))}
-                className="w-20 bg-slate-950 border border-slate-800 rounded px-2 py-0.5 text-xs font-bold text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 text-center"
-              />
-            </div>
-          </div>
-
-          {/* Botón de Cargar Gasto */}
-          <button 
-            onClick={() => setShowAddForm(true)}
-            className="w-full md:w-auto flex items-center justify-center space-x-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-5 py-2.5 rounded-xl transition-all shadow-md shadow-emerald-500/10 active:scale-95 duration-150 text-sm"
-          >
-            <Plus className="w-4 h-4 stroke-[3px]" />
-            <span>Registrar Gasto</span>
-          </button>
-        </div>
-      </header>
-
-      {/* TOAST SYSTEM */}
+      {/* ALERTA FLOTANTE / TOAST */}
       {toast && (
-        <div className={`fixed bottom-6 right-6 z-50 flex items-center p-4 rounded-xl shadow-2xl max-w-sm transition-all border animate-fade-in ${
-          toast.type === 'error' ? 'bg-red-950/90 border-red-800 text-red-200' : 
-          toast.type === 'info' ? 'bg-blue-950/90 border-blue-800 text-blue-200' : 
-          'bg-slate-900/95 border-emerald-500/50 text-slate-100'
-        }`}>
-          <div className="mr-3">
-            {toast.type === 'error' ? <X className="w-5 h-5 text-red-400" /> : <Check className="w-5 h-5 text-emerald-400" />}
-          </div>
-          <div className="text-xs font-medium">{toast.message}</div>
+        <div className="fixed bottom-6 right-6 z-50 flex items-center p-4 rounded-xl shadow-2xl border bg-slate-900 border-slate-800 animate-slide-in">
+          <div className={`w-2.5 h-2.5 rounded-full mr-3 ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+          <span className="text-sm font-medium text-slate-200">{toast.message}</span>
         </div>
       )}
 
-      {}
+      {/* HEADER DE LA APP */}
+      <header className="border-b border-slate-900 bg-slate-950 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 sticky top-0 z-40 backdrop-blur-md bg-opacity-95">
+        <div className="flex items-center space-x-3 w-full md:w-auto">
+          <div className="bg-gradient-to-tr from-indigo-500 to-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20 flex items-center justify-center">
+            <Landmark className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-black tracking-tight text-white">FinanzArg</h1>
+              <span className="bg-indigo-500/10 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-indigo-500/20">Cloud Sync</span>
+            </div>
+            <p className="text-xs text-slate-400 font-medium">Billetera de Pesos & Dólares multi-dispositivo</p>
+          </div>
+        </div>
+
+        {/* ESTADO DE CONEXIÓN Y ACCESO AL CÓDIGO */}
+        <div className="flex items-center flex-wrap gap-3 justify-end w-full md:w-auto">
+          {dbLoading ? (
+            <div className="flex items-center space-x-2 text-slate-500 text-xs bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800">
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span>Cargando nube...</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div 
+                onClick={handleCopyCode}
+                className="flex items-center space-x-2 cursor-pointer bg-slate-900 hover:bg-slate-850 active:scale-95 transition-all text-xs border border-slate-800 px-3 py-2 rounded-xl text-slate-300"
+                title="Copiar código para vincular otro dispositivo"
+              >
+                <Smartphone className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Grupo: <strong>{syncCode}</strong></span>
+                <Copy className="w-3.5 h-3.5 text-slate-500" />
+              </div>
+
+              <button 
+                onClick={() => setShowSyncModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-2 rounded-xl transition-all shadow-md flex items-center gap-1.5"
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Vincular</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* CUERPO PRINCIPAL */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
 
-        {/* DASHBOARD METRICS */}
+        {/* CONTROL DE COTIZACIÓN BLUE */}
+        <section className="bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <TrendingUp className="text-emerald-400 w-5 h-5 shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-slate-400">Conversor Consolidado (Moneda Única)</p>
+              <p className="text-[11px] text-slate-500">Utilizado para calcular tu balance consolidado y gráficos en tiempo real</p>
+            </div>
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-slate-400">1 USD =</span>
+            <div className="relative">
+              <span className="absolute left-2.5 top-1.5 text-xs text-slate-500">$</span>
+              <input 
+                type="number" 
+                value={dolarBlue}
+                onChange={(e) => setDolarBlue(parseFloat(e.target.value) || 0)}
+                className="bg-slate-950 border border-slate-800 rounded-xl pl-6 pr-3 py-1 w-28 text-xs font-bold text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            <span className="text-xs text-slate-500 font-semibold">ARS (Dólar Blue)</span>
+          </div>
+        </section>
+
+        {/* CONTENEDOR DE INDICADORES DE CAPITAL */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
           
-          {/* Card Pesos */}
-          <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-3xl"></div>
+          {/* Tarjeta Efectivo/Débito en Pesos */}
+          <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
             <div className="flex justify-between items-start">
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Gastado Pesos</p>
-                <h3 className="text-3xl font-black text-emerald-400 mt-1">${totalARS.toLocaleString('es-AR', { minimumFractionDigits: 2 })}</h3>
+              <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
+                <Wallet className="w-5 h-5" />
               </div>
-              <span className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400 text-xs font-bold">ARS</span>
+              <span className="text-[10px] bg-emerald-500/10 text-emerald-400 font-bold px-2 py-0.5 rounded-full border border-emerald-500/10">ARS Liquidez</span>
             </div>
-            <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1">
-              <Info className="w-3.5 h-3.5" />
-              Gastos registrados directamente en $
+            <div className="space-y-1">
+              <span className="text-xs text-slate-400">Total en Pesos ARS</span>
+              <h3 className="text-2xl font-black tracking-tight text-white">
+                ${financials.cashDebitArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+              </h3>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">Suma de Efectivo y cuentas de Débito</p>
+          </div>
+
+          {/* Tarjeta Efectivo/Débito en Dólares */}
+          <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+            <div className="flex justify-between items-start">
+              <div className="p-2 bg-indigo-500/10 rounded-xl text-indigo-400">
+                <DollarSign className="w-5 h-5" />
+              </div>
+              <span className="text-[10px] bg-indigo-500/10 text-indigo-400 font-bold px-2 py-0.5 rounded-full border border-indigo-500/10">USD Líquido</span>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs text-slate-400">Total en Dólares USD</span>
+              <h3 className="text-2xl font-black tracking-tight text-white">
+                u$s {financials.cashDebitUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+              </h3>
+            </div>
+            <p className="text-[10px] text-slate-400 font-medium">
+              ≈ ${(financials.cashDebitUsd * dolarBlue).toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS
             </p>
           </div>
 
-          {/* Card Dólares */}
-          <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 rounded-full blur-3xl"></div>
+          {/* Balance Total Consolidado en Pesos */}
+          <div className="bg-gradient-to-br from-indigo-950/40 via-indigo-900/10 to-slate-950 border border-indigo-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
             <div className="flex justify-between items-start">
-              <div>
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Gastado Dólares</p>
-                <h3 className="text-3xl font-black text-blue-400 mt-1">u$s {totalUSD.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h3>
+              <div className="p-2 bg-indigo-500/20 rounded-xl text-indigo-300">
+                <TrendingUp className="w-5 h-5" />
               </div>
-              <span className="p-2 bg-blue-500/10 rounded-lg text-blue-400 text-xs font-bold">USD</span>
+              <span className="text-[10px] bg-indigo-500/20 text-indigo-300 font-bold px-2 py-0.5 rounded-full border border-indigo-500/30">Líquido Neto</span>
             </div>
-            <p className="text-[11px] text-slate-500 mt-4 flex items-center gap-1">
-              <Info className="w-3.5 h-3.5" />
-              Representa aprox. ${(totalUSD * exchangeRate).toLocaleString('es-AR')} ARS
-            </p>
-          </div>
-
-          {/* Card Consolidado */}
-          <div className="bg-gradient-to-tr from-slate-900 to-indigo-950 border border-indigo-900/40 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/15 rounded-full blur-3xl"></div>
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="text-xs font-semibold text-indigo-300 uppercase tracking-wider">Consolidado Total (ARS)</p>
-                <h3 className="text-3xl font-black text-white mt-1">${totalConsolidatedARS.toLocaleString('es-AR', { minimumFractionDigits: 0 })}</h3>
-              </div>
-              <span className="p-2 bg-indigo-500/20 rounded-lg text-indigo-300 text-xs font-bold">Mix</span>
+            <div className="space-y-1">
+              <span className="text-xs text-indigo-300 font-medium">Consolidado Total ARS</span>
+              <h3 className="text-2xl font-black tracking-tight text-indigo-100">
+                ${financials.consolidatedArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })}
+              </h3>
             </div>
-            <p className="text-[11px] text-indigo-200/60 mt-4 flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              Valuado al tipo de cambio de $ {exchangeRate}
-            </p>
+            <p className="text-[10px] text-indigo-400">Conversión de dólares calculada al Blue</p>
           </div>
 
         </section>
 
-        {/* MODAL / FORMULARIO REGISTRO GASTO */}
-        {showAddForm && (
-          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-scale-up">
-              
-              {/* Header Modal */}
-              <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-                <h2 className="font-bold text-base text-slate-100 flex items-center gap-2">
-                  <Coins className="w-5 h-5 text-emerald-400" />
-                  Nuevo Gasto / Compra
-                </h2>
-                <button 
-                  onClick={() => setShowAddForm(false)}
-                  className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+        {/* ADVERTENCIA DE TARJETAS DE CRÉDITO / CUOTAS */}
+        <section className="bg-rose-950/20 border border-rose-900/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <CreditCard className="text-rose-400 w-5 h-5 shrink-0" />
+            <div>
+              <p className="text-xs font-bold text-rose-300">Próximo Cierre de Tarjeta (Cuotas Activas)</p>
+              <p className="text-[11px] text-slate-400">Total de cuotas que vencen este próximo período de facturación.</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-sm font-black text-rose-300">
+              ${financials.creditArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS
+            </div>
+            {financials.creditUsd > 0 && (
+              <div className="text-xs text-rose-400">
+                + u$s {financials.creditUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })} USD (≈ ${(financials.creditUsd * dolarBlue).toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS)
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* ESTRUCTURA DE FORMULARIO Y LISTADOS */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          
+          {/* FORMULARIO DE CARGA */}
+          <div className="lg:col-span-1 space-y-6">
+            <div className="bg-slate-900/50 border border-slate-900 rounded-3xl p-6 space-y-5">
+              <div className="flex items-center space-x-2 pb-2 border-b border-slate-900">
+                <Plus className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Cargar un Gasto</h3>
               </div>
 
-              {/* Formulario */}
-              <form onSubmit={handleAddExpense} className="p-6 space-y-4">
+              <form onSubmit={handleSubmitTransaction} className="space-y-4">
                 
-                {/* Título y Monto */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">¿Qué compraste / dónde?</label>
-                    <input 
-                      type="text" 
-                      placeholder="Coto, Farmacity, YPF..."
-                      value={newTitle}
-                      onChange={(e) => setNewTitle(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
-                    />
-                  </div>
+                {/* Categoría */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-400">Categoría</label>
+                  <select 
+                    value={category} 
+                    onChange={(e) => setCategory(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  >
+                    <option value="Comida">🍔 Comida</option>
+                    <option value="Servicios">💡 Servicios</option>
+                    <option value="Transporte">🚌 Transporte</option>
+                    <option value="Ocio">🍿 Ocio y Salidas</option>
+                    <option value="Otros">📦 Otros consumos</option>
+                  </select>
+                </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">Monto</label>
-                    <div className="relative">
+                {/* Descripción */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-400">Descripción / Establecimiento</label>
+                  <input 
+                    type="text" 
+                    placeholder="Ej. ChangoMas, Nafta, Netflix..."
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-600"
+                  />
+                </div>
+
+                {/* Importe y Moneda */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-400">Importe del Gasto</label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <span className="absolute left-3 top-2.5 text-xs text-slate-500">
+                        {currency === 'ARS' ? '$' : 'u$s'}
+                      </span>
                       <input 
                         type="number" 
-                        step="any"
                         placeholder="0.00"
-                        value={newAmount}
-                        onChange={(e) => setNewAmount(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-16 pr-3 py-2 text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
+                        step="any"
+                        value={amount}
+                        onChange={(e) => setAmount(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
-                      <div className="absolute left-1.5 top-1.5 flex bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-                        <button 
-                          type="button"
-                          onClick={() => setNewCurrency('ARS')}
-                          className={`px-2 py-0.5 text-[11px] font-black ${newCurrency === 'ARS' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400'}`}
-                        >
-                          $
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={() => setNewCurrency('USD')}
-                          className={`px-2 py-0.5 text-[11px] font-black ${newCurrency === 'USD' ? 'bg-blue-500 text-white' : 'text-slate-400'}`}
-                        >
-                          u$s
-                        </button>
-                      </div>
                     </div>
-                  </div>
-                </div>
-
-                {/* Método de pago y Categoría */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">Método de Pago</label>
-                    <select 
-                      value={newMethod}
-                      onChange={(e) => setNewMethod(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
+                    
+                    <select
+                      value={currency}
+                      onChange={(e) => setCurrency(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-xl px-3 text-xs font-bold text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     >
-                      <option value="cash">Efectivo</option>
-                      <option value="debit">Tarjeta de Débito</option>
-                      <option value="credit">Tarjeta de Crédito</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">Categoría</label>
-                    <select 
-                      value={newCategory}
-                      onChange={(e) => setNewCategory(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
-                    >
-                      {CATEGORIES.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
+                      <option value="ARS">ARS ($)</option>
+                      <option value="USD">USD (u$s)</option>
                     </select>
                   </div>
                 </div>
 
-                {}
-                {/* Cuotas y Nombre de Tarjeta (Solo Crédito/Débito) */}
-                {newMethod !== 'cash' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-950/60 p-4 rounded-xl border border-slate-800/60 animate-fade-in">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-slate-400">Nombre de la Tarjeta / Banco</label>
-                      <input 
-                        type="text" 
-                        placeholder="Ej. Visa Galicia, Mastercard BBVA..."
-                        value={newCardName}
-                        onChange={(e) => setNewCardName(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
-                      />
-                    </div>
-
-                    {newMethod === 'credit' && (
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-slate-400">Cantidad de Cuotas</label>
-                        <select 
-                          value={newInstallments}
-                          onChange={(e) => setNewInstallments(parseInt(e.target.value))}
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
+                {/* Método de Pago */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-slate-400">Método de Pago</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'efectivo', label: 'Efectivo', icon: Wallet },
+                      { id: 'debito', label: 'Débito', icon: Landmark },
+                      { id: 'credito', label: 'Crédito', icon: CreditCard }
+                    ].map(method => {
+                      const Icon = method.icon;
+                      const isSelected = paymentMethod === method.id;
+                      return (
+                        <button
+                          key={method.id}
+                          type="button"
+                          onClick={() => setPaymentMethod(method.id)}
+                          className={`p-2.5 border rounded-xl flex flex-col items-center justify-center gap-1.5 text-center transition-all ${isSelected ? 'bg-indigo-600/20 border-indigo-500 text-indigo-200 font-bold' : 'bg-slate-950 border-slate-850 text-slate-400 hover:border-slate-800'}`}
                         >
-                          <option value={1}>1 Pago (Sin cuotas)</option>
-                          <option value={3}>3 Cuotas</option>
-                          <option value={6}>6 Cuotas</option>
-                          <option value={9}>9 Cuotas</option>
-                          <option value={12}>12 Cuotas</option>
-                          <option value={18}>18 Cuotas</option>
-                          <option value={24}>24 Cuotas</option>
-                        </select>
-                        {newInstallments > 1 && newAmount && (
-                          <p className="text-[10px] text-amber-400 font-semibold mt-1">
-                            Aprox. {newInstallments} cuotas de {newCurrency === 'ARS' ? '$' : 'u$s'} {(parseFloat(newAmount) / newInstallments).toFixed(2)} por mes.
-                          </p>
-                        )}
-                      </div>
+                          <Icon className="w-4 h-4" />
+                          <span className="text-[10px]">{method.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Selección de cuotas (Solo si es tarjeta de crédito) */}
+                {paymentMethod === 'credito' && (
+                  <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2 animate-fade-in">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-semibold text-slate-400">Cantidad de Cuotas</span>
+                      <span className="font-bold text-indigo-400">
+                        {installments} {installments === 1 ? 'cuota' : 'cuotas'}
+                      </span>
+                    </div>
+                    <select
+                      value={installments}
+                      onChange={(e) => setInstallments(parseInt(e.target.value))}
+                      className="w-full bg-slate-900 border border-slate-850 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none"
+                    >
+                      <option value={1}>1 Pago sin cuotas</option>
+                      <option value={3}>3 Cuotas fijas</option>
+                      <option value={6}>6 Cuotas fijas</option>
+                      <option value={9}>9 Cuotas fijas</option>
+                      <option value={12}>12 Cuotas fijas</option>
+                      <option value={18}>18 Cuotas fijas</option>
+                      <option value={24}>24 Cuotas fijas</option>
+                    </select>
+                    {amount && parseFloat(amount) > 0 && (
+                      <p className="text-[10px] text-slate-500 pt-1">
+                        Pagarás un aproximado de <strong>{currency === 'ARS' ? '$' : 'u$s'} {(parseFloat(amount) / installments).toFixed(2)}</strong> por mes.
+                      </p>
                     )}
                   </div>
                 )}
 
-                {/* Fecha y Notas */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">Fecha del Gasto</label>
-                    <input 
-                      type="date" 
-                      value={newDate}
-                      onChange={(e) => setNewDate(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-400">Detalles / Notas (Opcional)</label>
-                    <input 
-                      type="text" 
-                      placeholder="Alguna aclaración corta..."
-                      value={newNotes}
-                      onChange={(e) => setNewNotes(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-100"
-                    />
-                  </div>
-                </div>
-
-                {/* Botón Guardar */}
-                <div className="pt-4 flex justify-end space-x-2">
-                  <button 
-                    type="button" 
-                    onClick={() => setShowAddForm(false)}
-                    className="px-4 py-2 border border-slate-800 hover:bg-slate-800 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-colors"
-                  >
-                    Cancelar
-                  </button>
-                  <button 
-                    type="submit" 
-                    className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-colors"
-                  >
-                    Guardar Gasto
-                  </button>
-                </div>
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white rounded-xl font-bold text-xs transition-all shadow-lg shadow-indigo-500/10 flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-4.5 h-4.5" />
+                  <span>Cargar Gasto</span>
+                </button>
 
               </form>
             </div>
-          </div>
-        )}
 
-        {/* CONTENIDO INTERACTIVO (LISTADO Y ANÁLISIS) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-          {}
-          <div className="lg:col-span-2 space-y-4">
-            
-            {/* BARRA DE FILTROS */}
-            <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-4 space-y-3.5">
-              <div className="flex flex-col md:flex-row gap-3">
-                
-                {/* Input Buscador */}
-                <div className="relative flex-1">
-                  <Search className="absolute left-3.5 top-2.5 w-4 h-4 text-slate-500" />
-                  <input 
-                    type="text" 
-                    placeholder="Buscar por comercio, notas, tarjeta..." 
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 text-slate-200 placeholder-slate-500 transition-all"
-                  />
-                </div>
-
-                {/* Filtro de Moneda */}
-                <div className="flex bg-slate-950 border border-slate-800 rounded-xl p-1 shrink-0">
-                  <button 
-                    onClick={() => setCurrencyFilter('all')}
-                    className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${currencyFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    Ambas
-                  </button>
-                  <button 
-                    onClick={() => setCurrencyFilter('ARS')}
-                    className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${currencyFilter === 'ARS' ? 'bg-emerald-500/10 text-emerald-400' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    ARS ($)
-                  </button>
-                  <button 
-                    onClick={() => setCurrencyFilter('USD')}
-                    className={`px-3 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${currencyFilter === 'USD' ? 'bg-blue-500/10 text-blue-400' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    USD (u$s)
-                  </button>
-                </div>
-              </div>
-
-              {/* Filtros Secundarios */}
-              <div className="flex flex-wrap gap-2 pt-1">
-                
-                {/* Filtro por Método */}
-                <select 
-                  value={methodFilter} 
-                  onChange={(e) => setMethodFilter(e.target.value)}
-                  className="bg-slate-950 border border-slate-800/80 rounded-xl px-3 py-1.5 text-[11px] font-semibold text-slate-300 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  <option value="all">Todos los Métodos</option>
-                  <option value="cash">Solo Efectivo</option>
-                  <option value="debit">Solo Débito</option>
-                  <option value="credit">Solo Tarjeta de Crédito</option>
-                </select>
-
-                {/* Filtro por Categoría */}
-                <select 
-                  value={categoryFilter} 
-                  onChange={(e) => setCategoryFilter(e.target.value)}
-                  className="bg-slate-950 border border-slate-800/80 rounded-xl px-3 py-1.5 text-[11px] font-semibold text-slate-300 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                >
-                  <option value="all">Todas las Categorías</option>
-                  {CATEGORIES.map(cat => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
-                </select>
-
-                {/* Reset Filters */}
-                {(searchQuery || currencyFilter !== 'all' || methodFilter !== 'all' || categoryFilter !== 'all') && (
-                  <button 
-                    onClick={() => {
-                      setSearchQuery('');
-                      setCurrencyFilter('all');
-                      setMethodFilter('all');
-                      setCategoryFilter('all');
-                    }}
-                    className="text-[11px] font-bold text-rose-400 hover:text-rose-300 transition-colors ml-auto flex items-center gap-1"
-                  >
-                    Limpiar Filtros
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* LISTA DE TRANSACCIONES */}
-            <div className="bg-slate-900/20 border border-slate-800/60 rounded-2xl overflow-hidden divide-y divide-slate-800/60">
+            {/* GRÁFICOS DE CATEGORÍA */}
+            <div className="bg-slate-900/50 border border-slate-900 rounded-3xl p-6 space-y-4">
+              <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Distribución de Gastos</h3>
               
-              {/* Header Listado */}
-              <div className="p-4 bg-slate-900/40 flex justify-between items-center border-b border-slate-800/60">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <FileText className="w-4 h-4 text-slate-500" />
-                  Movimientos registrados
-                </span>
-                <span className="bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-lg text-[10px] font-bold">
-                  {filteredExpenses.length} items
-                </span>
-              </div>
-
-              {/* Items */}
-              <div className="divide-y divide-slate-800/40">
-                {filteredExpenses.length === 0 ? (
-                  <div className="p-8 text-center flex flex-col items-center justify-center">
-                    <Info className="w-10 h-10 text-slate-600 mb-2" />
-                    <p className="text-sm font-semibold text-slate-400">No hay gastos que coincidan con la búsqueda.</p>
-                    <p className="text-xs text-slate-500 mt-1">Intentá cambiar los filtros o agregá un gasto nuevo.</p>
-                  </div>
-                ) : (
-                  filteredExpenses.map(item => {
-                    const MethodIcon = PAYMENT_METHODS[item.paymentMethod]?.icon || Coins;
-                    const methodConfig = PAYMENT_METHODS[item.paymentMethod];
-                    
-                    return (
-                      <div key={item.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-slate-900/30 transition-all">
-                        
-                        {/* Info Principal */}
-                        <div className="flex items-start gap-3">
-                          <div className={`p-2 rounded-xl border shrink-0 ${methodConfig?.color || 'text-slate-400 bg-slate-800/50'}`}>
-                            <MethodIcon className="w-5 h-5" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h4 className="text-sm font-bold text-slate-200">{item.title}</h4>
-                              <span className="bg-slate-800 text-slate-400 px-2 py-0.5 rounded text-[9px] font-bold">
-                                {item.category}
-                              </span>
-                            </div>
-                            <div className="flex flex-wrap gap-x-2.5 gap-y-1 mt-1 text-[11px] text-slate-500 font-medium">
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3 h-3" />
-                                {item.date}
-                              </span>
-                              {item.cardName && (
-                                <span className="flex items-center gap-1 text-slate-400">
-                                  <CreditCard className="w-3 h-3" />
-                                  {item.cardName}
-                                </span>
-                              )}
-                              {item.paymentMethod === 'credit' && item.installments > 1 && (
-                                <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.2 rounded text-[9px] font-black uppercase">
-                                  {item.installments} cuotas
-                                </span>
-                              )}
-                            </div>
-                            {item.notes && (
-                              <p className="text-xs text-slate-400 mt-1 italic">"{item.notes}"</p>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Monto & Eliminación */}
-                        <div className="flex items-center justify-between md:justify-end gap-4 border-t border-slate-800/30 md:border-t-0 pt-2 md:pt-0">
-                          <div className="text-right">
-                            <span className={`text-base font-black ${item.currency === 'ARS' ? 'text-emerald-400' : 'text-blue-400'}`}>
-                              {item.currency === 'ARS' ? '$' : 'u$s'} {item.amount.toLocaleString(item.currency === 'ARS' ? 'es-AR' : 'en-US', { minimumFractionDigits: 2 })}
-                            </span>
-                            {item.paymentMethod === 'credit' && item.installments > 1 && (
-                              <p className="text-[10px] text-slate-500 font-medium">
-                                Cuota aprox: {item.currency === 'ARS' ? '$' : 'u$s'} {(item.amount / item.installments).toFixed(2)}
-                              </p>
-                            )}
-                          </div>
-
-                          <button 
-                            onClick={() => handleDeleteExpense(item.id)}
-                            className="p-2 hover:bg-rose-950/30 text-slate-600 hover:text-rose-400 rounded-xl transition-all border border-transparent hover:border-rose-950/40"
-                            title="Eliminar registro"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-
+              {categoryStats.length === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-6">Registra gastos para ver el análisis de consumos.</p>
+              ) : (
+                <div className="space-y-3">
+                  {categoryStats.map(cat => (
+                    <div key={cat.name} className="space-y-1">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-300">{cat.name}</span>
+                        <span className="text-slate-400 font-medium">
+                          ${cat.value.toLocaleString('es-AR', { maximumFractionDigits: 0 })} ARS ({cat.percentage}%)
+                        </span>
                       </div>
-                    );
-                  })
-                )}
-              </div>
-
-            </div>
-          </div>
-
-          {}
-          <div className="space-y-6">
-            
-            {/* DISTRIBUCIÓN POR MÉTODO DE PAGO */}
-            <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-5 space-y-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <PieChart className="w-4 h-4 text-emerald-400" />
-                Gastos por Método de Pago
-              </h3>
-              
-              <div className="space-y-3">
-                {Object.entries(PAYMENT_METHODS).map(([key, config]) => {
-                  const amt = methodTotals[key] || 0;
-                  const pct = totalConsolidatedARS > 0 ? Math.round((amt / totalConsolidatedARS) * 100) : 0;
-                  const MethodIcon = config.icon || Coins;
-
-                  return (
-                    <div key={key} className="space-y-1.5">
-                      <div className="flex justify-between items-center text-xs">
-                        <div className="flex items-center space-x-2 text-slate-300">
-                          <span className={`p-1 rounded-md border ${config.color}`}>
-                            <MethodIcon className="w-3.5 h-3.5" />
-                          </span>
-                          <span className="font-semibold">{config.name}</span>
-                        </div>
-                        <div className="text-right font-bold text-slate-200">
-                          <span>${amt.toLocaleString('es-AR', { maximumFractionDigits: 0 })}</span>
-                          <span className="text-[10px] text-slate-500 ml-1.5">({pct}%)</span>
-                        </div>
-                      </div>
-                      <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                      <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-900">
                         <div 
-                          className={`h-1.5 rounded-full ${key === 'cash' ? 'bg-emerald-400' : key === 'debit' ? 'bg-blue-400' : 'bg-amber-400'}`} 
-                          style={{ width: `${pct}%` }}
-                        ></div>
+                          className="bg-indigo-500 h-full rounded-full"
+                          style={{ width: `${cat.percentage}%` }}
+                        />
                       </div>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* HISTORIAL Y FILTROS */}
+          <div className="lg:col-span-2 space-y-4 flex flex-col h-full">
+            
+            {/* Filtros rápidos */}
+            <div className="bg-slate-900/50 border border-slate-900 rounded-2xl p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
+              
+              {/* Buscador de texto */}
+              <div className="relative w-full md:w-64">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                <input 
+                  type="text" 
+                  placeholder="Buscar gastos..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 focus:outline-none placeholder-slate-600"
+                />
               </div>
 
-              <div className="bg-slate-950 border border-slate-800/80 p-3 rounded-xl">
-                <p className="text-[10px] text-slate-400 leading-relaxed">
-                  💡 <strong>Nota sobre Consolidación:</strong> Para armar este gráfico calculamos tus consumos en dólares a la cotización asignada arriba (${exchangeRate} ARS).
-                </p>
+              {/* Selectores de Filtro */}
+              <div className="flex flex-wrap gap-2 w-full md:w-auto justify-end">
+                
+                {/* Filtro por Método */}
+                <div className="flex items-center space-x-1">
+                  <ListFilter className="w-3.5 h-3.5 text-slate-500" />
+                  <select
+                    value={filterMethod}
+                    onChange={(e) => setFilterMethod(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none"
+                  >
+                    <option value="all">Cualquier Pago</option>
+                    <option value="efectivo">Efectivo</option>
+                    <option value="debito">Débito</option>
+                    <option value="credito">Tarjeta Crédito</option>
+                  </select>
+                </div>
+
+                {/* Filtro por Moneda */}
+                <select
+                  value={filterCurrency}
+                  onChange={(e) => setFilterCurrency(e.target.value)}
+                  className="bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none"
+                >
+                  <option value="all">Cualquier Moneda</option>
+                  <option value="ARS">Solo Pesos ($)</option>
+                  <option value="USD">Solo Dólares (u$s)</option>
+                </select>
+
               </div>
             </div>
 
-            {/* DISTRIBUCIÓN POR CATEGORÍA */}
-            <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-5 space-y-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                <Tag className="w-4 h-4 text-blue-400" />
-                Gastos por Categoría
-              </h3>
+            {/* Listado de Transacciones */}
+            <div className="bg-slate-900/50 border border-slate-900 rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[400px]">
+              
+              {/* Encabezado Lista */}
+              <div className="px-6 py-4 border-b border-slate-900 flex justify-between items-center bg-slate-900/30">
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Historial del Grupo Sincronizado</h4>
+                <span className="text-[10px] bg-indigo-500/10 text-indigo-300 px-2.5 py-1 rounded-md font-bold">
+                  {filteredAndSortedTransactions.length} registros
+                </span>
+              </div>
 
-              <div className="space-y-3.5">
-                {Object.keys(categoryTotals).length === 0 ? (
-                  <p className="text-xs text-slate-500 italic">No hay suficientes registros para graficar.</p>
+              {/* Lista Scrolleable */}
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-900/60">
+                {filteredAndSortedTransactions.length === 0 ? (
+                  <div className="p-12 text-center flex flex-col items-center justify-center h-full">
+                    <Landmark className="w-12 h-12 text-slate-700 mb-3" />
+                    <p className="text-sm font-bold text-slate-400">Sin consumos cargados</p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-sm">No encontramos gastos que coincidan con los filtros activos.</p>
+                    
+                    {transactions.filter(t => t.syncCode === syncCode).length === 0 && (
+                      <button 
+                        onClick={handleLoadMockData}
+                        className="mt-4 px-4 py-2 bg-slate-900 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-xl text-xs font-bold transition-all"
+                      >
+                        Cargar gastos de prueba
+                      </button>
+                    )}
+                  </div>
                 ) : (
-                  Object.entries(categoryTotals)
-                    .sort((a, b) => b[1] - a[1]) // ordenar de mayor a menor gasto
-                    .slice(0, 5) // mostrar top 5
-                    .map(([cat, amt]) => {
-                      const pct = totalConsolidatedARS > 0 ? Math.round((amt / totalConsolidatedARS) * 100) : 0;
-                      return (
-                        <div key={cat} className="space-y-1">
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="font-semibold text-slate-300">{cat}</span>
-                            <span className="font-bold text-slate-200">${amt.toLocaleString('es-AR', { maximumFractionDigits: 0 })} ({pct}%)</span>
-                          </div>
-                          <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-                            <div className="bg-indigo-400 h-1.5 rounded-full" style={{ width: `${pct}%` }}></div>
+                  filteredAndSortedTransactions.map((t) => (
+                    <div key={t.id} className="px-6 py-4 flex justify-between items-center gap-4 hover:bg-slate-900/20 transition-colors">
+                      <div className="flex items-start space-x-3.5 min-w-0">
+                        {/* Icono de Método de Pago */}
+                        <div className={`p-2 rounded-xl shrink-0 ${t.paymentMethod === 'credito' ? 'bg-rose-500/10 text-rose-400' : t.paymentMethod === 'debito' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+                          {t.paymentMethod === 'credito' ? (
+                            <CreditCard className="w-4 h-4" />
+                          ) : t.paymentMethod === 'debito' ? (
+                            <Landmark className="w-4 h-4" />
+                          ) : (
+                            <Wallet className="w-4 h-4" />
+                          )}
+                        </div>
+
+                        {/* Detalles de la compra */}
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-200 truncate">{t.description}</p>
+                          <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
+                            <span className="text-[9px] bg-slate-850 text-slate-400 px-1.5 rounded-md font-medium border border-slate-800">
+                              {t.category}
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              vía <strong className="text-slate-400 capitalize">{t.paymentMethod}</strong>
+                            </span>
+                            {t.installments > 1 && (
+                              <span className="text-[9px] text-rose-400 font-bold bg-rose-500/5 px-1.5 rounded">
+                                {t.installments} cuotas
+                              </span>
+                            )}
                           </div>
                         </div>
-                      );
-                    })
+                      </div>
+
+                      {/* Montos y Acciones */}
+                      <div className="flex items-center space-x-4 shrink-0">
+                        <div className="text-right">
+                          <p className="text-xs font-black text-white">
+                            {t.currency === 'ARS' ? '$' : 'u$s'} {t.amount.toLocaleString('es-AR')}
+                          </p>
+                          {t.paymentMethod === 'credito' && t.installments > 1 && (
+                            <p className="text-[9px] text-rose-400">
+                              Cuotas de: {t.currency === 'ARS' ? '$' : 'u$s'} {(t.amount / t.installments).toFixed(2)}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Botón de Borrado */}
+                        <button
+                          onClick={() => setDeleteId(t.id)}
+                          className="p-1.5 text-slate-600 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-all"
+                          title="Eliminar registro"
+                        >
+                          <Trash2 className="w-4.5 h-4.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
                 )}
-              </div>
-            </div>
-
-            {/* ALERTAS / CONTROL DE DEUDA TARJETA */}
-            <div className="bg-gradient-to-br from-amber-500/5 to-slate-900 border border-amber-500/20 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center space-x-2">
-                <Percent className="w-4 h-4 text-amber-400" />
-                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Control de Cuotas y Crédito</h3>
-              </div>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Aquí podés monitorear los consumos que vencen a mediano plazo o compras de montos grandes financiados.
-              </p>
-
-              {/* Deuda total aproximada en tarjetas de crédito */}
-              <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-semibold text-slate-400">Total en Crédito (Consolidado)</span>
-                  <span className="text-xs font-bold text-amber-400">
-                    ${(expenses
-                      .filter(e => e.paymentMethod === 'credit')
-                      .reduce((sum, e) => sum + (e.currency === 'USD' ? e.amount * exchangeRate : e.amount), 0)
-                    ).toLocaleString('es-AR', { maximumFractionDigits: 0 })} ARS
-                  </span>
-                </div>
-                
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-semibold text-slate-400">Compras en Cuotas Activas</span>
-                  <span className="text-xs font-bold text-slate-300">
-                    {expenses.filter(e => e.paymentMethod === 'credit' && e.installments > 1).length} compras
-                  </span>
-                </div>
               </div>
             </div>
 
@@ -839,13 +816,100 @@ export default function App() {
       </main>
 
       {/* FOOTER */}
-      <footer className="mt-auto bg-slate-950 border-t border-slate-900 px-6 py-4 text-center flex justify-between items-center text-xs text-slate-500">
-        <span>FinanzArg - Diseñado para Finanzas Argentinas</span>
-        <span className="flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-          Multi-Moneda & Control de Cuotas
-        </span>
+      <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500">
+        <p>FinanzArg Cloud Wallet — Desarrollado para sincronización en tiempo real.</p>
+        <p className="text-[10px] text-slate-600 mt-0.5">Utiliza infraestructura Firestore sin almacenamiento en disco local.</p>
       </footer>
+
+      {/* ================= MODAL: VINCULAR OTRO DISPOSITIVO ================= */}
+      {showSyncModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+              <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                <Smartphone className="text-indigo-400 w-4 h-4" />
+                Vincular Dispositivos
+              </h4>
+              <button 
+                onClick={() => setShowSyncModal(false)}
+                className="text-xs text-slate-500 hover:text-white font-bold"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-slate-400 leading-relaxed">
+              <p>
+                Para poder ingresar gastos en tu celular y verlos en tiempo real en tu computadora, ambos deben estar usando el mismo <strong>Código de Sincronización</strong>.
+              </p>
+              
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-850 flex items-center justify-between">
+                <div>
+                  <span className="text-[9px] text-slate-500 uppercase font-black block">Código de este dispositivo:</span>
+                  <span className="text-sm font-mono font-bold text-white tracking-widest">{syncCode}</span>
+                </div>
+                <button 
+                  onClick={handleCopyCode}
+                  className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg font-bold"
+                >
+                  Copiar
+                </button>
+              </div>
+
+              <div className="border-t border-slate-800/60 my-4 pt-4 space-y-2">
+                <label className="text-[10px] uppercase font-black text-slate-400 block">¿Querés unirte a otro grupo?</label>
+                <form onSubmit={handleConnectSyncCode} className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Ej. ARG-123456"
+                    value={inputSyncCode}
+                    onChange={(e) => setInputSyncCode(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
+                  />
+                  <button 
+                    type="submit"
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg"
+                  >
+                    Unirse
+                  </button>
+                </form>
+                <span className="text-[9px] text-slate-500 italic block">
+                  Cuidado: Al cambiar de grupo dejarás de ver los gastos actuales para conectarte a la nueva base.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: CONFIRMACIÓN DE BORRADO (REGLA MODAL) ================= */}
+      {deleteId && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
+            <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+              <AlertCircle className="text-rose-500 w-4 h-4" />
+              ¿Eliminar Gasto?
+            </h4>
+            <p className="text-xs text-slate-400">
+              Esta acción eliminará de forma permanente el registro en la nube para todos los dispositivos vinculados. Esta operación no puede deshacerse.
+            </p>
+            <div className="flex gap-2.5 justify-end">
+              <button 
+                onClick={() => setDeleteId(null)}
+                className="bg-slate-950 hover:bg-slate-850 text-slate-400 border border-slate-800 text-xs px-3 py-2 rounded-lg font-bold"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={handleDeleteTransaction}
+                className="bg-rose-600 hover:bg-rose-500 text-white text-xs px-4 py-2 rounded-lg font-bold"
+              >
+                Eliminar Registro
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
