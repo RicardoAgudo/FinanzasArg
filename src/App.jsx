@@ -3,219 +3,143 @@ import {
   Plus, Trash2, CreditCard, DollarSign, RefreshCw, Smartphone, Laptop, 
   Copy, Check, ArrowUpRight, ArrowDownLeft, Wallet, Landmark, HelpCircle, 
   Calendar, Layers, Filter, Search, Shield, Wifi, Info, ListFilter, Users,
-  CheckCircle, TrendingUp, AlertCircle, Sparkles, Database
+  CheckCircle, TrendingUp, AlertCircle, Sparkles, Database, LogOut, Mail, Lock
 } from 'lucide-react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { createClient } from '@supabase/supabase-js';
 
-// ================= ACCESO SEGURO A VARIABLES GLOBALES =================
-// Previene fallas de compilación y ejecución en Vercel (ReferenceError) usando try/catch
-const getGlobalConfig = () => {
+// ================= CONFIGURACIÓN SEGURA DE SUPABASE =================
+// Intentamos obtener las credenciales de Supabase del almacenamiento local (localStorage)
+// Esto permite que el Canvas y tu propia web en Vercel funcionen sin caídas y de manera híbrida
+const getStoredSupabaseConfig = () => {
   try {
-    return typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-  } catch (e) {
-    return null;
-  }
-};
-const getGlobalAppId = () => {
-  try {
-    return typeof __app_id !== 'undefined' ? __app_id : 'finanzarg-default-app';
-  } catch (e) {
-    return 'finanzarg-default-app';
-  }
-};
-const getGlobalAuthToken = () => {
-  try {
-    return typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-  } catch (e) {
-    return null;
-  }
-};
-
-const rawAppId = getGlobalAppId();
-const appId = rawAppId.replace(/\//g, '-');
-
-// Intentamos obtener una configuración personalizada de Firebase que el usuario haya guardado localmente
-const getLocalFirebaseConfig = () => {
-  try {
-    const stored = localStorage.getItem('finanzarg_custom_firebase');
+    const stored = localStorage.getItem('finanzarg_supabase_config');
     return stored ? JSON.parse(stored) : null;
   } catch (e) {
     return null;
   }
 };
 
-// Determinar qué configuración usar (Prioriza la global de la plataforma, luego la del usuario en Vercel)
-let firebaseConfig = null;
-const globalConfigStr = getGlobalConfig();
-if (globalConfigStr) {
-  try {
-    firebaseConfig = JSON.parse(globalConfigStr);
-  } catch (e) {
-    console.error("Error al leer la configuración global de Firebase:", e);
-  }
-} else {
-  firebaseConfig = getLocalFirebaseConfig();
-}
+const supabaseConfig = getStoredSupabaseConfig();
+const isSupabaseActive = !!(supabaseConfig?.url && supabaseConfig?.anonKey);
 
-// Inicialización controlada de Firebase para evitar caídas si no hay config activa
-let firebaseApp = null;
-let auth = null;
-let db = null;
-const isFirebaseActive = !!firebaseConfig;
-
-if (isFirebaseActive) {
-  try {
-    firebaseApp = initializeApp(firebaseConfig);
-    auth = getAuth(firebaseApp);
-    db = getFirestore(firebaseApp);
-  } catch (e) {
-    console.error("Error al inicializar servicios de Firebase:", e);
-  }
-}
+// Inicializamos el cliente de Supabase condicionalmente para no romper la app si no está configurado
+const supabase = isSupabaseActive 
+  ? createClient(supabaseConfig.url, supabaseConfig.anonKey) 
+  : null;
 
 export default function App() {
-  // --- Estados de Autenticación y Carga ---
+  // --- Estados de Autenticación y Conexión ---
   const [user, setUser] = useState(null);
   const [dbLoading, setDbLoading] = useState(true);
-  
-  // CORRECCIÓN: Inicialización robusta para evitar estados vacíos que oculten consumos nuevos
-  const getInitialSyncCode = () => {
-    try {
-      return localStorage.getItem('finanzarg_local_synccode') || 'ARG-LOCAL';
-    } catch (e) {
-      return 'ARG-LOCAL';
-    }
-  };
-  const [syncCode, setSyncCode] = useState(getInitialSyncCode());
-  const [inputSyncCode, setInputSyncCode] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false); // Alternar entre Login y Registro
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // --- Ajustes de base de datos propia ---
-  const [customDbInput, setCustomDbInput] = useState('');
-  const [showDbSettings, setShowDbSettings] = useState(false);
+  // --- Estados del Formulario de Credenciales de Base de Datos ---
+  const [customUrl, setCustomUrl] = useState(supabaseConfig?.url || '');
+  const [customAnonKey, setCustomAnonKey] = useState(supabaseConfig?.anonKey || '');
 
   // --- Estados de Negocio ---
   const [transactions, setTransactions] = useState([]);
   const [dolarBlue, setDolarBlue] = useState(1380); // Cotización por defecto ARS/USD
   const [deleteId, setDeleteId] = useState(null); // Para modal de confirmación
 
-  // --- Estados del Formulario de Registro ---
+  // --- Estados del Formulario de Registro de Gasto ---
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('ARS'); // ARS o USD
   const [paymentMethod, setPaymentMethod] = useState('efectivo'); // efectivo, debito, credito
   const [installments, setInstallments] = useState(1); // 1, 3, 6, 12, 18, 24 cuotas
-  const [category, setCategory] = useState('Comida'); // Comida, Servicios, Transporte, Ocio, Otros
+  const [category, setCategory] = useState('Comida'); // Comida, Servicios, etc.
 
   // --- Estados de Filtrado ---
   const [filterMethod, setFilterMethod] = useState('all');
   const [filterCurrency, setFilterCurrency] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Pre-cargar campo de entrada de Firebase si ya existe localmente
+  // ================= 1. CONTROL DE SESIÓN EN TIEMPO REAL (SUPABASE) =================
   useEffect(() => {
-    const custom = localStorage.getItem('finanzarg_custom_firebase');
-    if (custom) setCustomDbInput(custom);
-  }, []);
-
-  // ================= 1. EFECTO DE AUTENTICACIÓN (HÍBRIDO) =================
-  useEffect(() => {
-    if (!isFirebaseActive || !auth) {
+    if (!isSupabaseActive || !supabase) {
       setDbLoading(false);
       return;
     }
 
-    const initAuth = async () => {
+    // Comprobar sesión actual
+    const checkSession = async () => {
       try {
-        const token = getGlobalAuthToken();
-        if (token) {
-          await signInWithCustomToken(auth, token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Error de inicialización de autenticación:", error);
-        triggerToast("Error de conexión con el servidor", "error");
-      }
-    };
-    initAuth();
-
-    const unsubscribe = onAuthStateChanged(auth, (usr) => {
-      setUser(usr);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // ================= 2. CONFIGURACIÓN DE GRUPO/SYNC CODE (HÍBRIDO) =================
-  useEffect(() => {
-    if (!isFirebaseActive) {
-      const localCode = localStorage.getItem('finanzarg_local_synccode') || 'ARG-LOCAL';
-      setSyncCode(localCode);
-      setDbLoading(false);
-      return;
-    }
-
-    if (!user || !db) return;
-
-    const fetchUserSettings = async () => {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
-      try {
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setSyncCode(docSnap.data().syncCode);
-        } else {
-          const randomCode = 'ARG-' + Math.floor(100000 + Math.random() * 900000);
-          await setDoc(docRef, { syncCode: randomCode });
-          setSyncCode(randomCode);
-        }
-      } catch (error) {
-        console.error("Error leyendo ajustes del usuario:", error);
-        setSyncCode('ARG-TEMPORAL');
+        const { data: { session } } = await supabase.auth.getSession();
+        setUser(session?.user || null);
+      } catch (e) {
+        console.error("Error comprobando sesión de Supabase:", e);
       } finally {
         setDbLoading(false);
       }
     };
+    checkSession();
 
-    fetchUserSettings();
-  }, [user]);
+    // Escuchar cambios de sesión (Login, Logout, Token renovado)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user || null);
+    });
 
-  // ================= 3. ESCUCHA DE GASTOS EN TIEMPO REAL (HÍBRIDO) =================
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ================= 2. ESCUCHA DE GASTOS EN TIEMPO REAL (SUPABASE O LOCAL) =================
   useEffect(() => {
-    if (!isFirebaseActive) {
-      const storedTransactions = localStorage.getItem('finanzarg_transactions');
-      if (storedTransactions) {
+    if (!isSupabaseActive || !user || !supabase) {
+      // Modo Local: Cargar de localStorage
+      const stored = localStorage.getItem('finanzarg_supabase_transactions_local');
+      if (stored) {
         try {
-          setTransactions(JSON.parse(storedTransactions));
+          setTransactions(JSON.parse(stored));
         } catch (e) {
           console.error("Error cargando transacciones locales:", e);
         }
       }
+      setDbLoading(false);
       return;
     }
 
-    if (!user || !syncCode || !db) return;
+    // Modo Sincronizado: Obtener transacciones del usuario actual
+    const fetchTransactions = async () => {
+      setDbLoading(true);
+      try {
+        const { data, error } = await supabase
+          .from('transactions')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
-
-    const unsubscribe = onSnapshot(colRef, 
-      (snapshot) => {
-        const list = [];
-        snapshot.forEach((doc) => {
-          list.push({ id: doc.id, ...doc.data() });
-        });
-        setTransactions(list);
-      },
-      (error) => {
-        console.error("Error al suscribirse a transacciones:", error);
-        triggerToast("Error de lectura en base de datos", "error");
+        if (error) throw error;
+        setTransactions(data || []);
+      } catch (e) {
+        console.error("Error obteniendo transacciones:", e);
+        triggerToast("Error al sincronizar con la nube", "error");
+      } finally {
+        setDbLoading(false);
       }
-    );
+    };
+    fetchTransactions();
 
-    return () => unsubscribe();
-  }, [user, syncCode]);
+    // Configurar canal en tiempo real para refrescar automáticamente
+    const channel = supabase
+      .channel('realtime_transactions')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'transactions',
+        filter: `user_id=eq.${user.id}`
+      }, () => {
+        fetchTransactions(); // Refrescar en cualquier cambio (inserción, actualización, borrado)
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
 
   // ================= AUXILIARES Y TOASTS =================
   const triggerToast = (message, type = 'success') => {
@@ -225,53 +149,85 @@ export default function App() {
     }, 3000);
   };
 
-  const handleCopyCode = () => {
-    const textField = document.createElement('textarea');
-    textField.innerText = syncCode;
-    document.body.appendChild(textField);
-    textField.select();
-    document.execCommand('copy');
-    textField.remove();
-    triggerToast("¡Código copiado! Pegalo en tu otro dispositivo", "success");
-  };
-
-  // ================= CAMBIAR CÓDIGO DE SINCRONIZACIÓN =================
-  const handleConnectSyncCode = async (e) => {
+  // ================= AUTENTICACIÓN (LOGIN / REGISTRO) =================
+  const handleAuth = async (e) => {
     e.preventDefault();
-    if (!inputSyncCode.trim() || inputSyncCode.trim().length < 4) {
-      triggerToast("Ingresá un código válido", "error");
+    if (!authEmail.trim() || !authPassword.trim()) {
+      triggerToast("Ingresá correo y contraseña", "error");
       return;
     }
 
-    const cleanCode = inputSyncCode.trim().toUpperCase();
-
-    if (!isFirebaseActive) {
-      setSyncCode(cleanCode);
-      localStorage.setItem('finanzarg_local_synccode', cleanCode);
-      setInputSyncCode('');
-      setShowSyncModal(false);
-      triggerToast(`¡Conectado localmente al grupo ${cleanCode}!`, "success");
+    if (!isSupabaseActive || !supabase) {
+      // Mock Auth en modo local
+      triggerToast("¡Simulación Exitosa! Conecta Supabase en Vincular para guardar de verdad.", "success");
+      setUser({ id: 'local-user', email: authEmail.trim() });
       return;
     }
 
     setDbLoading(true);
-
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'user_config');
-      await setDoc(docRef, { syncCode: cleanCode });
-      setSyncCode(cleanCode);
-      setInputSyncCode('');
-      setShowSyncModal(false);
-      triggerToast(`¡Conectado exitosamente al grupo ${cleanCode}!`, "success");
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        triggerToast("¡Registro exitoso! Revisa tu email para confirmar", "success");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authEmail.trim(),
+          password: authPassword,
+        });
+        if (error) throw error;
+        triggerToast("Sesión iniciada con éxito", "success");
+      }
     } catch (e) {
-      console.error("Error al actualizar código de sincronización:", e);
-      triggerToast("No se pudo conectar al grupo", "error");
+      console.error(e);
+      triggerToast(e.message || "Error de autenticación", "error");
     } finally {
       setDbLoading(false);
     }
   };
 
-  // ================= REGISTRAR TRANSACCIÓN (HÍBRIDO) =================
+  const handleLogout = async () => {
+    if (isSupabaseActive && supabase) {
+      await supabase.auth.signOut();
+    } else {
+      setUser(null);
+    }
+    triggerToast("Sesión cerrada", "info");
+  };
+
+  // ================= CONFIGURAR CREDENCIALES SUPABASE PROPIAS =================
+  const handleSaveSupabaseConfig = (e) => {
+    e.preventDefault();
+    if (!customUrl.trim() || !customAnonKey.trim()) {
+      triggerToast("Ingresá parámetros válidos", "error");
+      return;
+    }
+
+    const config = {
+      url: customUrl.trim(),
+      anonKey: customAnonKey.trim()
+    };
+
+    localStorage.setItem('finanzarg_supabase_config', JSON.stringify(config));
+    triggerToast("Configuración guardada. Reiniciando...", "success");
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
+
+  const handleClearSupabaseConfig = () => {
+    localStorage.removeItem('finanzarg_supabase_config');
+    localStorage.removeItem('finanzarg_supabase_transactions_local');
+    triggerToast("Restablecido a Modo Local. Reiniciando...", "success");
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
+
+  // ================= REGISTRAR GASTO (SUPABASE O LOCAL) =================
   const handleSubmitTransaction = async (e) => {
     e.preventDefault();
 
@@ -280,23 +236,26 @@ export default function App() {
       return;
     }
 
-    const activeCode = syncCode || 'ARG-LOCAL';
     const newTransaction = {
       description: description.trim(),
       amount: parseFloat(amount),
       currency,
-      paymentMethod,
+      payment_method: paymentMethod,
       installments: paymentMethod === 'credito' ? parseInt(installments) : 1,
       category,
-      syncCode: activeCode,
-      createdAt: Date.now(),
-      author: user ? user.uid : 'local-user'
     };
 
-    if (!isFirebaseActive) {
-      const updated = [{ id: 'local-' + Date.now(), ...newTransaction }, ...transactions];
-      setTransactions(updated);
-      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+    if (!isSupabaseActive || !user || !supabase) {
+      // Modo Local: guardar en localStorage
+      const updatedItem = {
+        id: 'local-' + Date.now(),
+        created_at: new Date().toISOString(),
+        user_id: 'local-user',
+        ...newTransaction
+      };
+      const updatedList = [updatedItem, ...transactions];
+      setTransactions(updatedList);
+      localStorage.setItem('finanzarg_supabase_transactions_local', JSON.stringify(updatedList));
       
       setDescription('');
       setAmount('');
@@ -306,84 +265,62 @@ export default function App() {
       return;
     }
 
-    if (!user || !db) return;
-
     try {
-      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
-      await addDoc(colRef, newTransaction);
-      
+      const { error } = await supabase
+        .from('transactions')
+        .insert([{
+          user_id: user.id,
+          ...newTransaction
+        }]);
+
+      if (error) throw error;
+
       setDescription('');
       setAmount('');
       setPaymentMethod('efectivo');
       setInstallments(1);
-      triggerToast("Gasto registrado con éxito en la nube", "success");
+      triggerToast("Gasto guardado en Supabase", "success");
     } catch (error) {
-      console.error("Error al registrar transacción:", error);
-      triggerToast("No se pudo guardar en la nube", "error");
+      console.error("Error guardando transacción:", error);
+      triggerToast("No se pudo guardar el gasto", "error");
     }
   };
 
-  // ================= ELIMINAR TRANSACCIÓN (HÍBRIDO) =================
+  // ================= ELIMINAR GASTO (SUPABASE O LOCAL) =================
   const handleDeleteTransaction = async () => {
     if (!deleteId) return;
 
-    if (!isFirebaseActive) {
+    if (!isSupabaseActive || !user || !supabase) {
       const updated = transactions.filter(t => t.id !== deleteId);
       setTransactions(updated);
-      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+      localStorage.setItem('finanzarg_supabase_transactions_local', JSON.stringify(updated));
       setDeleteId(null);
       triggerToast("Registro eliminado con éxito", "success");
       return;
     }
 
-    if (!user || !db) return;
-
     try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'transactions', deleteId);
-      await deleteDoc(docRef);
+      const { error } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', deleteId);
+
+      if (error) throw error;
       triggerToast("Registro eliminado con éxito", "success");
     } catch (error) {
-      console.error("Error al eliminar:", error);
+      console.error("Error al eliminar gasto:", error);
       triggerToast("No se pudo borrar el registro", "error");
     } finally {
       setDeleteId(null);
     }
   };
 
-  // ================= CONFIGURAR BASE DE DATOS PROPIA (JSON) =================
-  const handleSaveCustomFirebase = (e) => {
-    e.preventDefault();
-    try {
-      const parsed = JSON.parse(customDbInput.trim());
-      if (!parsed.apiKey || !parsed.projectId || !parsed.authDomain) {
-        triggerToast("Formato inválido. Falta apiKey, authDomain o projectId", "error");
-        return;
-      }
-      localStorage.setItem('finanzarg_custom_firebase', JSON.stringify(parsed));
-      triggerToast("¡Configuración guardada! Reiniciando...", "success");
-      setTimeout(() => {
-        window.location.reload();
-      }, 1000);
-    } catch (err) {
-      triggerToast("Error: Estructura JSON inválida", "error");
-    }
-  };
-
-  const handleClearCustomFirebase = () => {
-    localStorage.removeItem('finanzarg_custom_firebase');
-    triggerToast("Restablecido a Modo Local. Reiniciando...", "success");
-    setTimeout(() => {
-      window.location.reload();
-    }, 1000);
-  };
-
   // ================= FILTRADO Y ORDEN DE DATOS (EN MEMORIA) =================
   const filteredAndSortedTransactions = useMemo(() => {
-    const activeCode = syncCode || 'ARG-LOCAL';
-    let result = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
+    let result = [...transactions];
 
     if (filterMethod !== 'all') {
-      result = result.filter(t => t.paymentMethod === filterMethod);
+      result = result.filter(t => t.payment_method === filterMethod);
     }
 
     if (filterCurrency !== 'all') {
@@ -398,24 +335,21 @@ export default function App() {
       );
     }
 
-    return result.sort((a, b) => b.createdAt - a.createdAt);
-  }, [transactions, syncCode, filterMethod, filterCurrency, searchQuery]);
+    return result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  }, [transactions, filterMethod, filterCurrency, searchQuery]);
 
   // ================= CÁLCULO DE TOTALES (EN MEMORIA) =================
   const financials = useMemo(() => {
     let cashDebitArs = 0;
     let cashDebitUsd = 0;
-    let creditArs = 0; // Próximo vencimiento de cuotas en ARS
-    let creditUsd = 0; // Próximo vencimiento de cuotas en USD
-    let creditTotalAbsoluteArs = 0; // Deuda total absoluta (consumo sin dividir) ARS
-    let creditTotalAbsoluteUsd = 0; // Deuda total absoluta (consumo sin dividir) USD
+    let creditArs = 0; // Próxima cuota ARS
+    let creditUsd = 0; // Próxima cuota USD
+    let creditTotalAbsoluteArs = 0; // Deuda total absoluta ARS
+    let creditTotalAbsoluteUsd = 0; // Deuda total absoluta USD
 
-    const activeCode = syncCode || 'ARG-LOCAL';
-    const myGroup = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
-
-    myGroup.forEach(t => {
+    transactions.forEach(t => {
       const value = t.amount;
-      if (t.paymentMethod === 'credito') {
+      if (t.payment_method === 'credito') {
         const monthlyInstallment = value / (t.installments || 1);
         if (t.currency === 'ARS') {
           creditArs += monthlyInstallment;
@@ -448,15 +382,13 @@ export default function App() {
       creditTotalAbsoluteUsd,
       consolidatedCreditTotalAbsoluteArs
     };
-  }, [transactions, syncCode, dolarBlue]);
+  }, [transactions, dolarBlue]);
 
   // ================= CATEGORÍAS GRÁFICOS (EN MEMORIA) =================
   const categoryStats = useMemo(() => {
     const counts = {};
-    const activeCode = syncCode || 'ARG-LOCAL';
-    const myGroup = transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === activeCode);
 
-    myGroup.forEach(t => {
+    transactions.forEach(t => {
       const amountInPesos = t.currency === 'ARS' ? t.amount : t.amount * dolarBlue;
       counts[t.category] = (counts[t.category] || 0) + amountInPesos;
     });
@@ -468,43 +400,215 @@ export default function App() {
       value,
       percentage: Math.round((value / totalInPesos) * 100)
     })).sort((a, b) => b.value - a.value);
-  }, [transactions, syncCode, dolarBlue]);
+  }, [transactions, dolarBlue]);
 
-  // Carga de ejemplo si el grupo está vacío (Híbrido)
+  // Carga de ejemplo si la cuenta está nueva
   const handleLoadMockData = async () => {
-    const activeCode = syncCode || 'ARG-LOCAL';
     const mocks = [
-      { description: "Supermercado Coto", amount: 45000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Comida", syncCode: activeCode, createdAt: Date.now() - 86400000 * 2, author: user ? user.uid : 'local-user' },
-      { description: "Cena familiar", amount: 28000, currency: "ARS", paymentMethod: "efectivo", installments: 1, category: "Comida", syncCode: activeCode, createdAt: Date.now() - 86400000, author: user ? user.uid : 'local-user' },
-      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", paymentMethod: "credito", installments: 3, category: "Otros", syncCode: activeCode, createdAt: Date.now(), author: user ? user.uid : 'local-user' },
-      { description: "Suscripción Netflix", amount: 10, currency: "USD", paymentMethod: "credito", installments: 1, category: "Servicios", syncCode: activeCode, createdAt: Date.now() - 50000, author: user ? user.uid : 'local-user' },
-      { description: "Carga Sube", amount: 5000, currency: "ARS", paymentMethod: "debito", installments: 1, category: "Transporte", syncCode: activeCode, createdAt: Date.now() - 120000, author: user ? user.uid : 'local-user' }
+      { description: "Supermercado Coto", amount: 45000, currency: "ARS", payment_method: "debito", installments: 1, category: "Comida" },
+      { description: "Cena familiar", amount: 28000, currency: "ARS", payment_method: "efectivo", installments: 1, category: "Comida" },
+      { description: "Compra Amazon (Zapatillas)", amount: 120, currency: "USD", payment_method: "credito", installments: 3, category: "Otros" },
+      { description: "Suscripción Netflix", amount: 10, currency: "USD", payment_method: "credito", installments: 1, category: "Servicios" },
+      { description: "Carga Sube", amount: 5000, currency: "ARS", payment_method: "debito", installments: 1, category: "Transporte" }
     ];
 
-    if (!isFirebaseActive) {
-      const updated = [...mocks, ...transactions];
+    if (!isSupabaseActive || !user || !supabase) {
+      const formattedMocks = mocks.map((m, idx) => ({
+        id: `mock-${idx}-${Date.now()}`,
+        created_at: new Date(Date.now() - idx * 60000).toISOString(),
+        user_id: 'local-user',
+        ...m
+      }));
+      const updated = [...formattedMocks, ...transactions];
       setTransactions(updated);
-      localStorage.setItem('finanzarg_transactions', JSON.stringify(updated));
+      localStorage.setItem('finanzarg_supabase_transactions_local', JSON.stringify(updated));
       triggerToast("Cargados datos de prueba localmente", "success");
       return;
     }
 
-    if (!user || !db) return;
     try {
-      const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
-      for (const m of mocks) {
-        await addDoc(colRef, m);
-      }
-      triggerToast("Cargados datos de simulación en la nube", "success");
+      const insertList = mocks.map(m => ({ user_id: user.id, ...m }));
+      const { error } = await supabase.from('transactions').insert(insertList);
+      if (error) throw error;
+      triggerToast("Cargados datos de prueba en la nube", "success");
     } catch (e) {
       console.error(e);
+      triggerToast("No se pudieron cargar los datos de prueba", "error");
     }
   };
 
+  // ================= VISTA DE AUTENTICACIÓN =================
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4 font-sans antialiased">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 space-y-6 shadow-2xl relative overflow-hidden">
+          <div className="absolute -top-10 -right-10 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl"></div>
+          
+          <div className="text-center space-y-2">
+            <div className="inline-flex bg-gradient-to-tr from-indigo-500 to-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-500/20 mb-2">
+              <Landmark className="w-8 h-8 text-white" />
+            </div>
+            <h1 className="text-2xl font-black tracking-tight text-white">FinanzArg</h1>
+            <p className="text-xs text-slate-400">Control de tus cuentas unificado con Supabase</p>
+          </div>
+
+          {!isSupabaseActive && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] text-amber-300 leading-relaxed flex items-start gap-2.5">
+              <Info className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+              <span>
+                <strong>Modo Offline Activo:</strong> Tu propia base de datos de Supabase no está configurada aún. Puedes continuar registrando de forma local o vincular tu base gratis abajo.
+              </span>
+            </div>
+          )}
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-400">Correo Electrónico</label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
+                <input 
+                  type="email" 
+                  placeholder="tu@correo.com"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-600"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-400">Contraseña</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
+                <input 
+                  type="password" 
+                  placeholder="••••••••"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-slate-600"
+                  required
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white rounded-xl font-bold text-xs transition-all shadow-lg shadow-indigo-500/10 flex items-center justify-center gap-2"
+            >
+              {dbLoading ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : isSignUp ? (
+                'Crear Cuenta Nueva'
+              ) : (
+                'Iniciar Sesión'
+              )}
+            </button>
+          </form>
+
+          <div className="text-center pt-2">
+            <button 
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+            >
+              {isSignUp ? '¿Ya tenés una cuenta? Inicia Sesión' : '¿No tenés una cuenta? Regístrate gratis'}
+            </button>
+          </div>
+
+          <div className="border-t border-slate-800 pt-4 flex flex-col gap-3">
+            {!isSupabaseActive && (
+              <button
+                onClick={() => setUser({ id: 'local-user', email: 'Invitado Local' })}
+                className="w-full py-2.5 bg-slate-950 hover:bg-slate-850 text-slate-300 border border-slate-800 rounded-xl text-xs font-bold transition-all text-center"
+              >
+                Probar en Modo Local (Sin Cuenta)
+              </button>
+            )}
+
+            <button
+              onClick={() => setShowSyncModal(true)}
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Database className="w-3.5 h-3.5" />
+              Configurar Credenciales de Supabase
+            </button>
+          </div>
+        </div>
+
+        {/* MODAL CONFIGURACIÓN SUPABASE */}
+        {showSyncModal && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <Database className="text-indigo-400 w-4 h-4" />
+                  Credenciales Supabase
+                </h4>
+                <button 
+                  onClick={() => setShowSyncModal(false)}
+                  className="text-xs text-slate-500 hover:text-white font-bold"
+                >
+                  Cerrar
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveSupabaseConfig} className="space-y-4 text-xs text-slate-400">
+                <p>Ingresa los parámetros de tu proyecto gratuito de Supabase para activar las cuentas y sincronización en tiempo real.</p>
+                
+                <div className="space-y-1.5">
+                  <label className="font-semibold text-slate-300">SUPABASE_URL</label>
+                  <input 
+                    type="text" 
+                    placeholder="https://your-project.supabase.co"
+                    value={customUrl}
+                    onChange={(e) => setCustomUrl(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="font-semibold text-slate-300">SUPABASE_ANON_KEY</label>
+                  <input 
+                    type="text" 
+                    placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    value={customAnonKey}
+                    onChange={(e) => setCustomAnonKey(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none"
+                    required
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="submit"
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-xl transition-all flex-1"
+                  >
+                    Conectar Base
+                  </button>
+                  {localStorage.getItem('finanzarg_supabase_config') && (
+                    <button
+                      type="button"
+                      onClick={handleClearSupabaseConfig}
+                      className="bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-300 font-bold px-4 py-2 rounded-xl transition-all"
+                    >
+                      Desconectar
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ================= VISTA PRINCIPAL (DASHBOARD) =================
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
       
-      {/* ALERTA FLOTANTE / TOAST */}
+      {/* TOAST SYSTEM */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-50 flex items-center p-4 rounded-xl shadow-2xl border bg-slate-900 border-slate-800 animate-slide-in">
           <div className={`w-2.5 h-2.5 rounded-full mr-3 ${toast.type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
@@ -512,7 +616,7 @@ export default function App() {
         </div>
       )}
 
-      {/* HEADER DE LA APP */}
+      {/* HEADER PRINCIPAL */}
       <header className="border-b border-slate-900 bg-slate-950 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 sticky top-0 z-40 backdrop-blur-md bg-opacity-95">
         <div className="flex items-center space-x-3 w-full md:w-auto">
           <div className="bg-gradient-to-tr from-indigo-500 to-indigo-600 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20 flex items-center justify-center">
@@ -521,13 +625,13 @@ export default function App() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-black tracking-tight text-white">FinanzArg</h1>
-              {isFirebaseActive ? (
+              {isSupabaseActive ? (
                 <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-emerald-500/20 flex items-center gap-1">
-                  <Wifi className="w-2.5 h-2.5" /> Nube Sincronizada
+                  <Wifi className="w-2.5 h-2.5" /> Nube Supabase
                 </span>
               ) : (
                 <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold border border-amber-500/20 flex items-center gap-1">
-                  <Info className="w-2.5 h-2.5" /> Modo Local
+                  <Info className="w-2.5 h-2.5" /> Modo Local (Offline)
                 </span>
               )}
             </div>
@@ -535,57 +639,43 @@ export default function App() {
           </div>
         </div>
 
-        {/* ESTADO DE CONEXIÓN Y ACCESO AL CÓDIGO */}
+        {/* USUARIO CONECTADO */}
         <div className="flex items-center flex-wrap gap-3 justify-end w-full md:w-auto">
-          {dbLoading ? (
-            <div className="flex items-center space-x-2 text-slate-500 text-xs bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              <span>Cargando nube...</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <div 
-                onClick={handleCopyCode}
-                className="flex items-center space-x-2 cursor-pointer bg-slate-900 hover:bg-slate-850 active:scale-95 transition-all text-xs border border-slate-800 px-3 py-2 rounded-xl text-slate-300"
-                title="Copiar código para vincular otro dispositivo"
-              >
-                <Smartphone className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Grupo: <strong>{syncCode}</strong></span>
-                <Copy className="w-3.5 h-3.5 text-slate-500" />
-              </div>
+          <div className="flex items-center bg-slate-900 border border-slate-800 px-3.5 py-1.5 rounded-xl gap-2 text-xs text-slate-300">
+            <Mail className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="truncate max-w-[150px]">Cuenta: <strong>{user.email}</strong></span>
+          </div>
 
-              <button 
-                onClick={() => setShowSyncModal(true)}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-2 rounded-xl transition-all shadow-md flex items-center gap-1.5"
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>Vincular</span>
-              </button>
-            </div>
-          )}
+          <button 
+            onClick={handleLogout}
+            className="bg-slate-900 hover:bg-slate-800 border border-slate-800 p-2 rounded-xl text-slate-400 hover:text-white transition-colors"
+            title="Cerrar Sesión"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
-      {/* CUERPO PRINCIPAL */}
+      {/* CUERPO CENTRAL */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
 
-        {/* MENSAJE EXPLICATIVO PARA MODO LOCAL */}
-        {!isFirebaseActive && (
-          <section className="bg-slate-900/80 border border-indigo-900/40 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        {/* NOTIFICACIÓN MODO LOCAL */}
+        {!isSupabaseActive && (
+          <section className="bg-slate-900/85 border border-indigo-900/40 rounded-2xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="space-y-1">
               <h4 className="text-sm font-bold text-slate-200 flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-indigo-400" />
                 ¡Estás en Modo Local! (Offline)
               </h4>
               <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-                Tus gastos se guardan de forma segura en este navegador. Para sincronizarlos entre tu computadora y celular, haz clic en el botón de <strong>Vincular</strong> arriba a la derecha para conectar tu propia base de datos gratuita de Firebase.
+                Los consumos se almacenan en este navegador. Para habilitar la sincronización privada por internet entre tu computadora y tu celular, conecta tu base gratuita de Supabase.
               </p>
             </div>
             <button 
-              onClick={() => { setShowSyncModal(true); setShowDbSettings(true); }}
+              onClick={() => setShowSyncModal(true)}
               className="bg-indigo-950 hover:bg-indigo-900 border border-indigo-800/40 text-indigo-300 text-xs font-bold px-4 py-2 rounded-xl shrink-0 transition-colors"
             >
-              Conectar Nube Gratis
+              Configurar Supabase Gratis
             </button>
           </section>
         )}
@@ -614,7 +704,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* INDICADORES DE CAPITAL - LÍQUIDO DISPONIBLE (EFECTIVO Y DÉBITO) */}
+        {/* SECCIÓN 1: EFECTIVO Y DÉBITO */}
         <div className="space-y-3">
           <div className="flex items-center space-x-2 px-1">
             <Wallet className="w-4 h-4 text-emerald-400" />
@@ -622,7 +712,6 @@ export default function App() {
           </div>
           <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
             
-            {/* Tarjeta Efectivo/Débito en Pesos */}
             <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="flex justify-between items-start">
                 <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
@@ -639,7 +728,6 @@ export default function App() {
               <p className="text-[10px] text-slate-500 mt-1">Suma de Efectivo y cuentas de Débito</p>
             </div>
 
-            {/* Tarjeta Efectivo/Débito en Dólares */}
             <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="flex justify-between items-start">
                 <div className="p-2 bg-indigo-500/10 rounded-xl text-indigo-400">
@@ -658,7 +746,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Balance Total Consolidado en Pesos */}
             <div className="bg-gradient-to-br from-indigo-950/40 via-indigo-900/10 to-slate-950 border border-indigo-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full blur-3xl"></div>
               <div className="flex justify-between items-start">
@@ -679,7 +766,7 @@ export default function App() {
           </section>
         </div>
 
-        {/* INDICADORES DE CAPITAL - TARJETAS DE CRÉDITO */}
+        {/* SECCIÓN 2: TARJETAS DE CRÉDITO */}
         <div className="space-y-3">
           <div className="flex items-center space-x-2 px-1">
             <CreditCard className="w-4 h-4 text-rose-400" />
@@ -687,7 +774,6 @@ export default function App() {
           </div>
           <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
             
-            {/* Tarjeta Crédito Total en Pesos */}
             <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="flex justify-between items-start">
                 <div className="p-2 bg-rose-500/10 rounded-xl text-rose-400">
@@ -706,7 +792,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Tarjeta Crédito Total en Dólares */}
             <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-900 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="flex justify-between items-start">
                 <div className="p-2 bg-rose-500/10 rounded-xl text-rose-400">
@@ -725,7 +810,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* Balance Total Consolidado Deuda Crédito */}
             <div className="bg-gradient-to-br from-rose-950/40 via-rose-900/10 to-slate-950 border border-rose-900/30 rounded-3xl p-5 relative overflow-hidden flex flex-col justify-between h-40">
               <div className="absolute top-0 right-0 w-32 h-32 bg-rose-500/10 rounded-full blur-3xl"></div>
               <div className="flex justify-between items-start">
@@ -746,28 +830,7 @@ export default function App() {
           </section>
         </div>
 
-        {/* ADVERTENCIA DE TARJETAS DE CRÉDITO / CUOTAS */}
-        <section className="bg-rose-950/20 border border-rose-900/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <CreditCard className="text-rose-400 w-5 h-5 shrink-0" />
-            <div>
-              <p className="text-xs font-bold text-rose-300">Próximo Cierre de Tarjeta (Cuotas Activas)</p>
-              <p className="text-[11px] text-slate-400">Total de cuotas que vencen este próximo período de facturación.</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm font-black text-rose-300">
-              ${financials.creditArs.toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS
-            </div>
-            {financials.creditUsd > 0 && (
-              <div className="text-xs text-rose-400">
-                + u$s {financials.creditUsd.toLocaleString('es-AR', { minimumFractionDigits: 0 })} USD (≈ ${(financials.creditUsd * dolarBlue).toLocaleString('es-AR', { minimumFractionDigits: 0 })} ARS)
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* ESTRUCTURA DE FORMULARIO Y LISTADOS */}
+        {/* ESTRUCTURA DEL FORMULARIO Y HISTORIAL */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
           {/* FORMULARIO DE CARGA */}
@@ -866,7 +929,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Selección de cuotas (Solo si es tarjeta de crédito) */}
+                {/* Selección de cuotas (Crédito) */}
                 {paymentMethod === 'credito' && (
                   <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-2xl space-y-2 animate-fade-in">
                     <div className="flex justify-between items-center text-xs">
@@ -939,10 +1002,9 @@ export default function App() {
           {/* HISTORIAL Y FILTROS */}
           <div className="lg:col-span-2 space-y-4 flex flex-col h-full">
             
-            {/* Filtros rápidos */}
+            {/* FILTROS RÁPIDOS */}
             <div className="bg-slate-900/50 border border-slate-900 rounded-2xl p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
               
-              {/* Buscador de texto */}
               <div className="relative w-full md:w-64">
                 <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
                 <input 
@@ -954,10 +1016,8 @@ export default function App() {
                 />
               </div>
 
-              {/* Selectores de Filtro */}
               <div className="flex flex-wrap gap-2 w-full md:w-auto justify-end">
                 
-                {/* Filtro por Método */}
                 <div className="flex items-center space-x-1">
                   <ListFilter className="w-3.5 h-3.5 text-slate-500" />
                   <select
@@ -972,7 +1032,6 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Filtro por Moneda */}
                 <select
                   value={filterCurrency}
                   onChange={(e) => setFilterCurrency(e.target.value)}
@@ -986,18 +1045,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* Listado de Transacciones */}
+            {/* LISTADO DE TRANSACCIONES */}
             <div className="bg-slate-900/50 border border-slate-900 rounded-3xl flex-1 flex flex-col overflow-hidden min-h-[400px]">
               
-              {/* Encabezado Lista */}
               <div className="px-6 py-4 border-b border-slate-900 flex justify-between items-center bg-slate-900/30">
-                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Historial del Grupo Sincronizado</h4>
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Historial Sincronizado</h4>
                 <span className="text-[10px] bg-indigo-500/10 text-indigo-300 px-2.5 py-1 rounded-md font-bold">
                   {filteredAndSortedTransactions.length} registros
                 </span>
               </div>
 
-              {/* Lista Scrolleable */}
               <div className="flex-1 overflow-y-auto divide-y divide-slate-900/60">
                 {filteredAndSortedTransactions.length === 0 ? (
                   <div className="p-12 text-center flex flex-col items-center justify-center h-full">
@@ -1005,7 +1062,7 @@ export default function App() {
                     <p className="text-sm font-bold text-slate-400">Sin consumos cargados</p>
                     <p className="text-xs text-slate-500 mt-1 max-w-sm">No encontramos gastos que coincidan con los filtros activos.</p>
                     
-                    {transactions.filter(t => (t.syncCode || 'ARG-LOCAL') === (syncCode || 'ARG-LOCAL')).length === 0 && (
+                    {transactions.length === 0 && (
                       <button 
                         onClick={handleLoadMockData}
                         className="mt-4 px-4 py-2 bg-slate-900 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-xl text-xs font-bold transition-all"
@@ -1018,18 +1075,17 @@ export default function App() {
                   filteredAndSortedTransactions.map((t) => (
                     <div key={t.id} className="px-6 py-4 flex justify-between items-center gap-4 hover:bg-slate-900/20 transition-colors">
                       <div className="flex items-start space-x-3.5 min-w-0">
-                        {/* Icono de Método de Pago */}
-                        <div className={`p-2 rounded-xl shrink-0 ${t.paymentMethod === 'credito' ? 'bg-rose-500/10 text-rose-400' : t.paymentMethod === 'debito' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
-                          {t.paymentMethod === 'credito' ? (
+                        
+                        <div className={`p-2 rounded-xl shrink-0 ${t.payment_method === 'credito' ? 'bg-rose-500/10 text-rose-400' : t.payment_method === 'debito' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-400'}`}>
+                          {t.payment_method === 'credito' ? (
                             <CreditCard className="w-4.5 h-4.5" />
-                          ) : t.paymentMethod === 'debito' ? (
+                          ) : t.payment_method === 'debito' ? (
                             <Landmark className="w-4.5 h-4.5" />
                           ) : (
                             <Wallet className="w-4.5 h-4.5" />
                           )}
                         </div>
 
-                        {/* Detalles de la compra */}
                         <div className="min-w-0">
                           <p className="text-xs font-bold text-slate-200 truncate">{t.description}</p>
                           <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
@@ -1037,7 +1093,7 @@ export default function App() {
                               {t.category}
                             </span>
                             <span className="text-[10px] text-slate-500">
-                              vía <strong className="text-slate-400 capitalize">{t.paymentMethod}</strong>
+                              vía <strong className="text-slate-400 capitalize">{t.payment_method}</strong>
                             </span>
                             {t.installments > 1 && (
                               <span className="text-[9px] text-rose-400 font-bold bg-rose-500/5 px-1.5 rounded">
@@ -1048,20 +1104,18 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Montos y Acciones */}
                       <div className="flex items-center space-x-4 shrink-0">
                         <div className="text-right">
                           <p className="text-xs font-black text-white">
                             {t.currency === 'ARS' ? '$' : 'u$s'} {t.amount.toLocaleString('es-AR')}
                           </p>
-                          {t.paymentMethod === 'credito' && t.installments > 1 && (
+                          {t.payment_method === 'credito' && t.installments > 1 && (
                             <p className="text-[9px] text-rose-400">
                               Cuotas de: {t.currency === 'ARS' ? '$' : 'u$s'} {(t.amount / t.installments).toFixed(2)}
                             </p>
                           )}
                         </div>
 
-                        {/* Botón de Borrado */}
                         <button
                           onClick={() => setDeleteId(t.id)}
                           className="p-1.5 text-slate-600 hover:text-rose-400 rounded-lg hover:bg-rose-500/10 transition-all"
@@ -1084,127 +1138,77 @@ export default function App() {
 
       {/* FOOTER */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 px-6 text-center text-xs text-slate-500">
-        <p>FinanzArg Cloud Wallet — Desarrollado para sincronización en tiempo real.</p>
-        <p className="text-[10px] text-slate-600 mt-0.5">Utiliza infraestructura de base de datos híbrida local y en la nube.</p>
+        <p>FinanzArg Supabase Cloud Wallet — Conexión cifrada de datos en tiempo real.</p>
+        <p className="text-[10px] text-slate-600 mt-0.5">Utiliza infraestructura de base de datos híbrida local y Postgres en la nube.</p>
       </footer>
 
-      {/* ================= MODAL: VINCULAR OTRO DISPOSITIVO / AJUSTES NUBE ================= */}
+      {/* MODAL CONFIGURACIÓN SUPABASE EN DASHBOARD */}
       {showSyncModal && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in max-h-[90vh] overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md space-y-4 shadow-2xl animate-scale-in">
             <div className="flex justify-between items-center pb-2 border-b border-slate-800">
               <h4 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                <Smartphone className="text-indigo-400 w-4 h-4" />
-                Vincular Dispositivos
+                <Database className="text-indigo-400 w-4 h-4" />
+                Credenciales Supabase
               </h4>
               <button 
-                onClick={() => { setShowSyncModal(false); setShowDbSettings(false); }}
+                onClick={() => setShowSyncModal(false)}
                 className="text-xs text-slate-500 hover:text-white font-bold"
               >
                 Cerrar
               </button>
             </div>
 
-            <div className="space-y-4 text-xs text-slate-400 leading-relaxed">
+            <form onSubmit={handleSaveSupabaseConfig} className="space-y-4 text-xs text-slate-400">
+              <p>Ingresa los parámetros de tu proyecto gratuito de Supabase para activar las cuentas y sincronización en tiempo real.</p>
               
-              {/* Sincronización general */}
-              <div className="space-y-2">
-                <p>
-                  Para poder ingresar gastos en tu celular y verlos en tiempo real en tu computadora, ambos deben estar usando el mismo <strong>Código de Sincronización</strong>.
-                </p>
-                
-                <div className="p-3 bg-slate-950 rounded-xl border border-slate-850 flex items-center justify-between">
-                  <div>
-                    <span className="text-[9px] text-slate-500 uppercase font-black block">Código de este dispositivo:</span>
-                    <span className="text-sm font-mono font-bold text-white tracking-widest">{syncCode}</span>
-                  </div>
-                  <button 
-                    onClick={handleCopyCode}
-                    className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 px-3 py-1.5 rounded-lg font-bold"
-                  >
-                    Copiar
-                  </button>
-                </div>
-
-                <div className="pt-2">
-                  <label className="text-[10px] uppercase font-black text-slate-400 block mb-1.5">¿Querés unirte a otro grupo?</label>
-                  <form onSubmit={handleConnectSyncCode} className="flex gap-2">
-                    <input 
-                      type="text" 
-                      placeholder="Ej. ARG-123456"
-                      value={inputSyncCode}
-                      onChange={(e) => setInputSyncCode(e.target.value)}
-                      className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none"
-                    />
-                    <button 
-                      type="submit"
-                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-4 py-2 rounded-lg"
-                    >
-                      Unirse
-                    </button>
-                  </form>
-                  <span className="text-[9px] text-slate-500 italic mt-1 block">
-                    Cuidado: Al cambiar de grupo verás únicamente los datos correspondientes al nuevo código.
-                  </span>
-                </div>
+              <div className="space-y-1.5">
+                <label className="font-semibold text-slate-300">SUPABASE_URL</label>
+                <input 
+                  type="text" 
+                  placeholder="https://your-project.supabase.co"
+                  value={customUrl}
+                  onChange={(e) => setCustomUrl(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none"
+                  required
+                />
               </div>
 
-              {/* Ajustes avanzados de base de datos para despliegue independiente */}
-              <div className="border-t border-slate-800/80 pt-4 space-y-3">
-                <button
-                  type="button"
-                  onClick={() => setShowDbSettings(!showDbSettings)}
-                  className="flex items-center justify-between w-full text-[10px] uppercase font-black text-slate-400 hover:text-white transition-colors"
-                >
-                  <span className="flex items-center gap-1.5">
-                    <Database className="w-3.5 h-3.5 text-indigo-400" />
-                    Base de Datos Propia (Avanzado Vercel)
-                  </span>
-                  <span>{showDbSettings ? 'Ocultar' : 'Mostrar'}</span>
-                </button>
+              <div className="space-y-1.5">
+                <label className="font-semibold text-slate-300">SUPABASE_ANON_KEY</label>
+                <input 
+                  type="text" 
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  value={customAnonKey}
+                  onChange={(e) => setCustomAnonKey(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none"
+                  required
+                />
+              </div>
 
-                {showDbSettings && (
-                  <div className="space-y-3 pt-2 animate-fade-in bg-slate-950/40 p-3 rounded-2xl border border-slate-850">
-                    <p className="text-[11px] text-slate-400">
-                      Si hiciste el despliegue en tu propia cuenta de Vercel y deseas sincronización en tiempo real, puedes vincular una base de datos de Firebase Firestore de forma 100% gratuita.
-                    </p>
-                    <form onSubmit={handleSaveCustomFirebase} className="space-y-2">
-                      <label className="text-[9px] font-bold text-slate-500 block">Firebase Config (JSON format):</label>
-                      <textarea
-                        rows="5"
-                        placeholder='{ "apiKey": "AIza...", "authDomain": "...", "projectId": "..." }'
-                        value={customDbInput}
-                        onChange={(e) => setCustomDbInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[10px] font-mono text-slate-200 focus:outline-none"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          type="submit"
-                          className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors flex-1"
-                        >
-                          Guardar y Conectar
-                        </button>
-                        {localStorage.getItem('finanzarg_custom_firebase') && (
-                          <button
-                            type="button"
-                            onClick={handleClearCustomFirebase}
-                            className="bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-300 text-[10px] font-bold px-3 py-1.5 rounded-lg transition-colors"
-                          >
-                            Desconectar Nube
-                          </button>
-                        )}
-                      </div>
-                    </form>
-                  </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-xl transition-all flex-1"
+                >
+                  Conectar Base
+                </button>
+                {localStorage.getItem('finanzarg_supabase_config') && (
+                  <button
+                    type="button"
+                    onClick={handleClearSupabaseConfig}
+                    className="bg-rose-950 hover:bg-rose-900 border border-rose-900/40 text-rose-300 font-bold px-4 py-2 rounded-xl transition-all"
+                  >
+                    Desconectar
+                  </button>
                 )}
               </div>
-
-            </div>
+            </form>
           </div>
         </div>
       )}
 
-      {/* ================= MODAL: CONFIRMACIÓN DE BORRADO ================= */}
+      {/* MODAL: CONFIRMACIÓN DE BORRADO */}
       {deleteId && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
